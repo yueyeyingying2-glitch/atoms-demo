@@ -1,4 +1,4 @@
-export const viewerPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+export const viewerPolicy = "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const artifactPolicy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; base-uri 'none'; form-action 'none'";
 
 export const previewPolicy = artifactPolicy + "; sandbox allow-scripts allow-forms; frame-ancestors 'self'";
@@ -45,8 +45,8 @@ export function downloadDocument(html) {
   return prependToHead(html, '<meta http-equiv="Content-Security-Policy" content="' + artifactPolicy + '">');
 }
 
-export function viewerDocument(id) {
+export function viewerDocument(id, { content = '', state = '' } = {}) {
   return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>应用 · Atoms Demo</title><link rel="stylesheet" href="/styles.css"><script type="module" src="/viewer.js"></script>
-<body class="shared-app"><iframe id="shared-app" title="分享的应用" sandbox="allow-scripts allow-forms" data-project="${id}"></iframe></body></html>`;
+<body class="shared-app"><p class="shared-notice" id="shared-notice" role="status" hidden></p><iframe id="shared-app" title="分享的应用" sandbox="allow-scripts allow-forms" data-project="${id}" data-content="${content}" data-state="${state}"></iframe></body></html>`;
 }

@@ -35,7 +35,7 @@ export function validateCases(cases) {
         throw new Error('验收值格式不正确');
       }
       if (action === 'count' && (!Number.isInteger(value) || value < 0 || value > 100)) throw new Error('验收数量不正确');
-      if (action === 'press' && !/^(Enter|Escape|Space|ArrowUp|ArrowDown|ArrowLeft|ArrowRight)$/.test(value)) {
+      if (action === 'press' && !/^(Enter|Escape|Space|ArrowUp|ArrowDown|ArrowLeft|ArrowRight|[WASDwasd])$/.test(value)) {
         throw new Error('验收按键不支持');
       }
       return { action, target, value };

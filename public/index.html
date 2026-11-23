@@ -24,7 +24,7 @@
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-content">
         <h1 id="hero-title">把你的想法<br><span>变成能用的应用</span></h1>
-        <p>描述你想做的应用。生成后可以试用、查看测试结果，或把链接分享给别人。</p>
+        <p>描述你想做的应用。登录后生成应用，试用并通过验收后即可发布分享。</p>
         <form class="prompt-form hero-prompt" id="home-form">
           <label class="sr-only" for="home-prompt">描述你想做的应用</label>
           <textarea id="home-prompt" placeholder="例如：做一个秒表，支持开始、暂停、继续和归零。" rows="3" maxlength="800" required></textarea>
@@ -73,20 +73,22 @@
           <button type="button" role="tab" aria-controls="code-view" aria-selected="false" id="code-tab">代码</button>
         </div>
         <div class="publish-actions" id="publish-actions" hidden>
-          <button type="button" class="text-action" id="copy-link">复制链接</button>
-          <a class="solid compact" id="open-app" target="_blank" rel="noopener">打开应用 <span aria-hidden="true">↗</span></a>
+          <button type="button" class="outline compact" id="versions-open">版本历史</button>
+          <button type="button" class="solid compact" id="publication-open">发布</button>
         </div>
       </div>
       <div class="result-meta" id="result-meta" hidden>
         <span id="result-title"></span><span id="source-tag"></span>
-        <button class="text-action" type="button" id="previous-version" hidden>查看上一版</button>
+        <span id="version-tag"></span>
         <a id="download-app">下载 HTML</a>
       </div>
+      <ol id="development-stages" class="development-stages" aria-label="开发进度" hidden></ol>
       <div class="preview-controls" id="preview-controls" hidden>
         <div role="group" aria-label="预览尺寸">
           <button type="button" aria-pressed="true" id="desktop-preview">桌面</button>
           <button type="button" aria-pressed="false" id="mobile-preview">手机</button>
         </div>
+        <span id="storage-status" class="storage-status" role="status" hidden></span>
         <button type="button" class="text-action" id="refresh-preview">刷新预览</button>
       </div>
       <div id="preview-view" class="preview-view" role="tabpanel" aria-labelledby="preview-tab">
@@ -103,6 +105,7 @@
 
   <dialog id="auth-dialog" aria-labelledby="auth-title">
     <div class="dialog-head"><h2 id="auth-title"></h2><button type="button" class="text-action" id="auth-close" aria-label="关闭">×</button></div>
+    <p id="auth-reason" class="dialog-note" hidden>登录或注册后继续生成。你输入的需求会保留。</p>
     <form id="auth-form">
       <label for="username">用户名</label><input id="username" name="username" autocomplete="username" minlength="2" maxlength="30" required>
       <label for="password">密码</label><input id="password" name="password" type="password" minlength="8" maxlength="72" required>
@@ -117,6 +120,27 @@
       <button class="solid" id="auth-submit" type="submit"></button>
     </form>
     <button class="text-action auth-switch" type="button" id="auth-switch"></button>
+  </dialog>
+  <dialog id="publication-dialog" class="workspace-dialog" aria-labelledby="publication-title">
+    <div class="dialog-head"><h2 id="publication-title">发布应用</h2><button type="button" class="text-action" id="publication-close" aria-label="关闭发布窗口">×</button></div>
+    <p id="publication-description" class="dialog-note"></p>
+    <div id="publication-share" hidden>
+      <label class="sr-only" for="share-url">公网访问链接</label>
+      <div class="share-input"><input id="share-url" readonly><button class="solid compact" id="copy-link" type="button">复制链接</button></div>
+      <div class="dialog-actions">
+        <a class="outline compact" id="open-app" target="_blank" rel="noopener">打开链接 ↗</a>
+        <a class="outline compact" id="open-guest" target="_blank" rel="noopener">预览访客视图 ↗</a>
+        <button type="button" class="danger-action" id="unpublish">下线</button>
+      </div>
+      <p class="dialog-note">访客记录保存在各自的浏览器中。</p>
+    </div>
+    <p id="publication-error" class="auth-error" role="alert" hidden></p>
+    <button class="solid compact" type="button" id="publish-current">发布当前版本</button>
+  </dialog>
+
+  <dialog id="versions-dialog" class="workspace-dialog" aria-labelledby="versions-title">
+    <div class="dialog-head"><h2 id="versions-title">版本历史</h2><button type="button" class="text-action" id="versions-close" aria-label="关闭版本历史">×</button></div>
+    <ol id="versions-list" class="versions-list"></ol>
   </dialog>
   <p class="toast" id="toast" role="status" hidden></p>
 </body>

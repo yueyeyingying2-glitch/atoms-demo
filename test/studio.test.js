@@ -4,6 +4,8 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { createStudioServer } from '../src/server.js';
+import { createStore } from '../src/store.js';
+import { assemble } from '../src/generate.js';
 import { examples } from '../src/spec.js';
 
 async function listen(context, server) {
@@ -23,13 +25,13 @@ function studio(options = {}) {
 
 function client(base) {
   let cookie = '';
-  return async (path, payload) => {
+  return async (path, payload, options = {}) => {
     const headers = cookie ? { Cookie: cookie } : {};
     let init = { headers };
     if (payload !== undefined) {
       init = { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
     }
-    const response = await fetch(base + path, init);
+    const response = await fetch(base + path, { ...init, ...options });
     const saved = response.headers.get('set-cookie');
     if (saved) cookie = saved.split(';')[0];
     return response;
@@ -56,7 +58,25 @@ async function solveChallenge(request) {
   return { challengeId: answer.id, choice };
 }
 
-test('三项真实交互检查通过后才发出访客可打开的成品链接', async t => {
+async function register(request, suffix = '') {
+  const account = { username: 'reviewer_' + randomBytes(4).toString('hex') + suffix, password: 'test-account-81!' };
+  const response = await request('/api/register', { ...account, ...await solveChallenge(request) });
+  assert.equal(response.status, 201);
+  return account;
+}
+
+const publicationPath = id => '/api/projects/' + id + '/publication';
+
+async function publish(request, id) {
+  const response = await request(publicationPath(id), { action: 'publish' });
+  assert.equal(response.status, 200);
+  const published = await response.json();
+  assert.equal(published.status, 'published');
+  assert.equal(published.versionId, id);
+  return published.url;
+}
+
+test('游客不能生成，三项成品由账号发布后可供访客操作', async t => {
   const base = await listen(t, studio());
   const visitor = client(base);
   const stranger = client(base);
@@ -64,18 +84,28 @@ test('三项真实交互检查通过后才发出访客可打开的成品链接',
   assert.equal(initial.user, null);
   assert.equal(initial.featured.length, 3);
   assert.deepEqual(initial.history, []);
+  assert.equal((await visitor('/api/generate', { prompt: examples[0].prompt })).status, 401);
+  assert.equal((await stranger(initial.featured[0].url)).status, 200);
+  await register(visitor);
 
   for (const { prompt, spec } of examples) {
     const steps = await events(await visitor('/api/generate', { prompt }));
-    assert.deepEqual(steps.map(item => item.stage), ['plan', 'build', 'check', 'done']);
+    assert.deepEqual(steps.map(item => item.stage), ['plan', 'build', 'check', 'verify', 'done']);
     const { project } = steps.at(-1);
     assert.equal(project.kind, spec.kind);
     assert.equal(project.source, 'fallback');
     assert.ok(project.checks.length >= 6 && project.checks.every(item => item.passed));
-    const shared = await stranger(project.url);
+    assert.equal(project.publication.status, 'unpublished');
+    assert.equal(project.url, null);
+    assert.equal((await stranger('/preview/' + project.id)).status, 404);
+    assert.equal((await stranger('/apps/' + project.id)).status, 404);
+    assert.equal((await visitor('/preview/' + project.id)).status, 200);
+    const link = await publish(visitor, project.id);
+    const shared = await stranger(link);
     assert.equal(shared.status, 200);
-    assert.match(await shared.text(), new RegExp('data-app="' + spec.kind + '"'));
-    assert.match((await stranger(project.url + '/download')).headers.get('content-disposition'), /attachment/);
+    assert.match(await shared.text(), /sandbox="allow-scripts allow-forms"/);
+    assert.match(await (await stranger(link + '/content')).text(), new RegExp('data-app="' + spec.kind + '"'));
+    assert.match((await stranger(link + '/download')).headers.get('content-disposition'), /attachment/);
     assert.equal((await stranger('/api/projects/' + project.id)).status, 404);
   }
 
@@ -89,7 +119,6 @@ test('点击图像验证码注册，退出后用用户名密码登录并恢复�
   const base = await listen(t, studio());
   const visitor = client(base);
   await visitor('/api/bootstrap');
-  const saved = (await events(await visitor('/api/generate', { prompt: '做一个秒表' }))).at(-1).project;
   const account = { username: 'reviewer_one', password: 'local-check-51!' };
 
   const answer = await solveChallenge(visitor);
@@ -99,6 +128,7 @@ test('点击图像验证码注册，退出后用用户名密码登录并恢复�
   const registered = await visitor('/api/register', { ...account, ...await solveChallenge(visitor) });
   assert.equal(registered.status, 201);
   assert.match(registered.headers.get('set-cookie'), /HttpOnly; SameSite=Lax/);
+  const saved = (await events(await visitor('/api/generate', { prompt: '做一个秒表' }))).at(-1).project;
 
   assert.equal((await visitor('/api/logout', {})).status, 200);
   assert.equal((await visitor('/api/projects/' + saved.id)).status, 404);
@@ -139,12 +169,13 @@ test('兼容模型返回新公式，限流重试成功并签发新应用', async
     model: { baseUrl: modelHost + '/v1', model: 'synthetic-calculation', key: 'test-only-key' }
   }));
   const visitor = client(base);
+  await register(visitor);
   const result = (await events(await visitor('/api/generate', { prompt: '做一个出差补贴计算器' }))).at(-1);
   assert.equal(calls, 2);
   assert.equal(result.stage, 'done');
   assert.equal(result.project.source, 'model');
   assert.equal(result.project.title, '出差补贴计算器');
-  assert.equal((await visitor(result.project.url)).status, 200);
+  assert.equal((await visitor(await publish(visitor, result.project.id))).status, 200);
 });
 
 test('无效模型密钥时，验收链仍生成可操作秒表', async t => {
@@ -153,34 +184,55 @@ test('无效模型密钥时，验收链仍生成可操作秒表', async t => {
     model: { baseUrl: modelHost, model: 'fake-model', key: 'invalid-test-key' }
   }));
   const visitor = client(base);
+  await register(visitor);
   const result = await events(await visitor('/api/generate', { prompt: '做一个秒表' }));
   assert.ok(result.some(entry => entry.stage === 'fallback'));
   assert.equal(result.at(-1).project.source, 'fallback');
-  assert.equal((await visitor(result.at(-1).project.url)).status, 200);
+  assert.equal((await visitor(await publish(visitor, result.at(-1).project.id))).status, 200);
 });
 
-test('秒表增量修改新增计次，通过检查才出新链接，失败与越权均保留旧版', async t => {
+test('秒表增量修改、版本历史、更新发布和下线权限', async t => {
   const base = await listen(t, studio());
   const owner = client(base);
   const stranger = client(base);
+  const anonymous = client(base);
+  await register(owner);
+  await register(stranger);
   const original = (await events(await owner('/api/generate', { prompt: '做一个秒表' }))).at(-1).project;
-  const previousHtml = await (await owner(original.url)).text();
+  const link = await publish(owner, original.id);
+  const previousHtml = await (await anonymous(link + '/content')).text();
   assert.doesNotMatch(previousHtml, /id="lap"/);
   const request = { prompt: '给刚才这个秒表增加计次功能，保留现有操作。', projectId: original.id };
   assert.equal((await events(await stranger('/api/generate', request))).at(-1).stage, 'error');
   const modified = (await events(await owner('/api/generate', request))).at(-1);
   assert.equal(modified.stage, 'done');
   assert.equal(modified.project.parentId, original.id);
-  assert.notEqual(modified.project.url, original.url);
+  assert.equal(modified.project.url, link);
+  assert.equal(modified.project.publication.versionId, original.id);
+  assert.deepEqual(modified.project.versions.map(item => [item.id, item.number]), [[original.id, 1], [modified.project.id, 2]]);
   assert.ok(modified.project.checks.some(item => item.label === '计次记录当前累积时间' && item.passed));
-  assert.match(await (await stranger(modified.project.url)).text(), /id="lap"/);
+  assert.doesNotMatch(await (await anonymous(link + '/content')).text(), /id="lap"/);
+  assert.equal((await stranger(publicationPath(modified.project.id), { action: 'publish' })).status, 404);
+  assert.equal(await publish(owner, modified.project.id), link);
+  assert.match(await (await anonymous(link + '/content')).text(), /id="lap"/);
   assert.equal((await events(await owner('/api/generate', {
     prompt: '修改当前应用为倒计时', projectId: modified.project.id
   }))).at(-1).stage, 'error');
   const recovered = await (await owner('/api/projects/' + modified.project.id)).json();
   assert.equal(recovered.parentId, original.id);
-  assert.equal(await (await owner(original.url)).text(), previousHtml);
+  assert.equal(await (await owner('/preview/' + original.id)).text(), previousHtml);
   assert.equal((await (await owner('/api/bootstrap')).json()).history.length, 2);
+  assert.equal((await stranger(publicationPath(original.id), { action: 'unpublish' })).status, 404);
+  assert.equal((await owner(publicationPath(original.id), { action: 'unpublish' })).status, 200);
+  for (const url of [link, link + '/content', link + '/download']) {
+    const unavailable = await anonymous(url);
+    assert.equal(unavailable.status, 410);
+    assert.match(await unavailable.text(), /应用已下线/);
+  }
+  assert.equal((await anonymous('/preview/' + modified.project.id)).status, 404);
+  assert.equal((await owner('/preview/' + modified.project.id)).status, 200);
+  assert.equal(await publish(owner, original.id), link);
+  assert.doesNotMatch(await (await anonymous(link + '/content')).text(), /id="lap"/);
 });
 
 test('取消模型生成会关闭上游请求，前一个产物不会被覆盖', { timeout: 6000 }, async t => {
@@ -195,18 +247,15 @@ test('取消模型生成会关闭上游请求，前一个产物不会被覆盖',
   const base = await listen(t, studio({
     model: { baseUrl: modelHost, model: 'cancel-check', key: randomBytes(16).toString('hex') }
   }));
-  const bootstrap = await fetch(base + '/api/bootstrap');
-  const cookie = bootstrap.headers.get('set-cookie').split(';')[0];
+  const visitor = client(base);
+  await register(visitor);
   const cancellation = new AbortController();
-  const response = await fetch(base + '/api/generate', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
-    body: JSON.stringify({ prompt: '做一个窗帘预算计算器' }), signal: cancellation.signal
-  });
+  const response = await visitor('/api/generate', { prompt: '做一个窗帘预算计算器' }, { signal: cancellation.signal });
   assert.equal(response.status, 200);
   await requestStarted;
   cancellation.abort();
   await requestClosed;
-  const details = await (await fetch(base + '/api/bootstrap', { headers: { Cookie: cookie } })).json();
+  const details = await (await visitor('/api/bootstrap')).json();
   assert.deepEqual(details.history, []);
   assert.equal((await fetch(base + '/apps/curtain-budget')).status, 200);
 });
@@ -273,34 +322,39 @@ saved.textContent=localStorage.getItem('saved')??'';</script></body></html>` };
   }));
   const visitor = client(base);
   assert.equal((await (await visitor('/api/bootstrap')).json()).engine, 'deepseek');
+  const account = await register(visitor);
   const stranger = client(base);
   const mortgage = await events(await visitor('/api/generate', { prompt: '做个提前还款计算器，并在刷新后保留方案' }));
-  assert.deepEqual(mortgage.map(item => item.stage), ['plan', 'build', 'check', 'done'], JSON.stringify(mortgage.at(-1).project?.checks));
+  assert.deepEqual(mortgage.map(item => item.stage), ['plan', 'build', 'check', 'verify', 'done'], JSON.stringify(mortgage.at(-1).project?.checks));
   const original = mortgage.at(-1).project;
   assert.equal(original.source, 'model');
   assert.equal(original.model, 'deepseek-flash');
   assert.equal(original.plan.cases.length, 2);
   assert.equal(original.checks.length, 3);
   assert.ok(original.checks.every(item => item.passed));
-  const shared = await stranger(original.url);
+  const publishedLink = await publish(visitor, original.id);
+  const shared = await stranger(publishedLink);
   assert.equal(shared.status, 200);
   assert.match(await shared.text(), /sandbox="allow-scripts allow-forms"/);
-  const preview = await stranger('/preview/' + original.id);
+  const preview = await stranger(publishedLink + '/content');
   assert.match(preview.headers.get('content-security-policy'), /sandbox allow-scripts allow-forms/);
   assert.match(await preview.text(), /atoms-storage/);
-  assert.match((await stranger(original.url + '/download')).headers.get('content-disposition'), /attachment/);
+  assert.match((await stranger(publishedLink + '/download')).headers.get('content-disposition'), /attachment/);
 
   const revised = (await events(await visitor('/api/generate', { prompt: '改成蓝色', projectId: original.id }))).at(-1).project;
   assert.equal(revised.parentId, original.id);
-  assert.notEqual(revised.url, original.url);
+  assert.equal(revised.url, publishedLink);
   assert.match(revised.html, /color:navy/);
   assert.equal(received[2].previous.html, original.html);
-  assert.doesNotMatch(await (await stranger('/preview/' + original.id)).text(), /color:navy/);
+  assert.doesNotMatch(await (await stranger(publishedLink + '/content')).text(), /color:navy/);
+  assert.equal(await publish(visitor, revised.id), publishedLink);
 
   const failed = (await events(await visitor('/api/generate', { prompt: '模拟计算发生故障', projectId: revised.id }))).at(-1);
   assert.equal(failed.stage, 'draft');
   assert.equal(failed.project.source, 'draft');
-  assert.equal(failed.project.url, null);
+  assert.equal(failed.project.publication.versionId, revised.id);
+  assert.equal(failed.project.canPublish, false);
+  assert.equal((await visitor(publicationPath(failed.project.id), { action: 'publish' })).status, 409);
   assert.equal(failed.project.parentId, revised.id);
   assert.ok(failed.project.checks.some(item => item.passed === false && item.detail.includes('预期')));
   assert.equal((await stranger('/apps/' + failed.project.id)).status, 404);
@@ -312,7 +366,7 @@ saved.textContent=localStorage.getItem('saved')??'';</script></body></html>` };
   assert.deepEqual(restored.checks, failed.project.checks);
 
   const repair = await events(await visitor('/api/generate', { prompt: '用自修复流程做一个提前还款计算器' }));
-  assert.deepEqual(repair.map(item => item.stage), ['plan', 'build', 'check', 'repair', 'check', 'done']);
+  assert.deepEqual(repair.map(item => item.stage), ['plan', 'build', 'check', 'repair', 'check', 'verify', 'done']);
   assert.ok(repair.at(-1).project.checks.every(item => item.passed));
   assert.ok(received.some(item => item.repair?.checks.some(result => result.passed === false)));
 
@@ -331,7 +385,16 @@ saved.textContent=localStorage.getItem('saved')??'';</script></body></html>` };
       await page.goto(base);
       await page.locator('#home-prompt').fill('做一个习惯打卡网页，支持取消打卡');
       await page.locator('#home-form button[type="submit"]').click();
-      await page.locator('#open-app').waitFor({ state: 'visible', timeout: 15_000 });
+      await page.locator('#auth-dialog').waitFor({ state: 'visible' });
+      await page.locator('#username').fill(account.username);
+      await page.locator('#password').fill(account.password);
+      await page.locator('#auth-submit').click();
+      try {
+        await page.locator('#publication-open').waitFor({ state: 'visible', timeout: 60_000 });
+      } catch (error) {
+        t.diagnostic(await page.locator('#progress').innerText());
+        throw error;
+      }
       assert.equal(await page.locator('#plan-title').textContent(), '习惯打卡');
       assert.match(await page.locator('#source-tag').textContent(), /DeepSeek/);
       await page.locator('#mobile-preview').click();
@@ -343,18 +406,183 @@ saved.textContent=localStorage.getItem('saved')??'';</script></body></html>` };
       assert.equal(await page.locator('#test-list .test-pass').count(), 4);
       await page.locator('#code-tab').click();
       assert.match(await page.locator('#project-code').textContent(), /reading.onclick/);
+      await page.locator('#publication-open').click();
+      await page.locator('#publish-current').click();
+      await page.locator('#open-app').waitFor({state:'visible'});
       const visitorPage = await (await browser.newContext()).newPage();
-      await visitorPage.goto(new URL(await page.locator('#open-app').getAttribute('href'), base).href);
+      await visitorPage.goto(await page.locator('#open-app').getAttribute('href'));
+      await page.locator('#publication-close').click();
       const sharedFrame = visitorPage.frameLocator('#shared-app');
       await sharedFrame.getByTestId('reading').click();
       assert.equal(await sharedFrame.getByTestId('total').textContent(), '1');
       await page.reload();
-      await page.locator('#open-app').waitFor({ state: 'visible' });
+      await page.locator('#publication-open').waitFor({ state: 'visible' });
       assert.equal(await page.locator('#plan-title').textContent(), '习惯打卡');
       assert.deepEqual(errors, []);
       if (process.env.TEST_STUDIO_SCREENSHOT) await page.screenshot({ path: process.env.TEST_STUDIO_SCREENSHOT });
     } finally {
       await browser.close();
     }
+  }
+});
+
+test('旧版公开链接可继续访问，作者纳管后也随同下线', async t => {
+  const databaseUrl = process.env.TEST_DATABASE_URL;
+  const schema = 'legacy_' + randomBytes(8).toString('hex');
+  const base = await listen(t, createStudioServer({ databaseUrl, schema }));
+  const owner = client(base);
+  const account = await register(owner);
+  const store = await createStore(databaseUrl, schema);
+  const { id: userId } = await store.user(account.username);
+  const example = examples.find(item => item.spec.kind === 'stopwatch');
+  const compiled = assemble(example.spec, example.prompt, 'fallback');
+  const legacy = await store.saveProject(compiled, 'account:' + userId, example.prompt);
+  await store.close();
+
+  const guest = client(base);
+  const oldUrl = '/apps/' + legacy.id;
+  assert.match(await (await guest(oldUrl)).text(), /id="readout"/);
+  assert.equal((await guest('/preview/' + legacy.id)).status, 200);
+  const version = (await events(await owner('/api/generate', {
+    prompt: '给刚才这个秒表增加计次功能', projectId: legacy.id
+  }))).at(-1).project;
+  assert.deepEqual(version.versions.map(item => item.id), [legacy.id, version.id]);
+  const link = await publish(owner, version.id);
+  const forwarded = await guest(oldUrl);
+  assert.equal(new URL(forwarded.url).pathname, link);
+  assert.equal((await guest('/preview/' + legacy.id)).status, 404);
+  assert.equal((await owner(publicationPath(version.id), { action: 'unpublish' })).status, 200);
+  assert.equal((await guest(oldUrl)).status, 410);
+  assert.equal((await guest(oldUrl + '/download')).status, 410);
+  assert.equal((await guest('/apps/stopwatch')).status, 200);
+});
+
+test('账号工具记录按账号隔离，共享工具允许游客在本地操作', async t => {
+  const base = await listen(t, studio());
+  const owner = client(base);
+  const account = await register(owner);
+  const other = client(base);
+  await register(other);
+  const project = (await events(await owner('/api/generate', { prompt: examples[0].prompt }))).at(-1).project;
+  const save = project.stateUrl;
+  const initial = await (await owner(save)).json();
+  assert.deepEqual(initial.entries, []);
+  assert.equal(initial.revision, 0);
+  const entries = [['history', '[{"total":600}]']];
+  assert.equal((await owner(save, { ...initial, entries })).status, 200);
+  assert.equal((await owner(save, { ...initial, entries: [] })).status, 409);
+  assert.equal((await other(save)).status, 404);
+
+  const secondDevice = client(base);
+  assert.equal((await secondDevice('/api/login', account)).status, 200);
+  const synced = await (await secondDevice(save)).json();
+  assert.deepEqual(synced, { account: initial.account, entries, revision: 1 });
+
+  const link = await publish(owner, project.id);
+  const sharedState = '/api/shared/' + link.split('/').at(-1) + '/state';
+  const guest = client(base);
+  assert.deepEqual(await (await guest(sharedState)).json(), { guest: true });
+  assert.equal((await guest(sharedState, synced)).status, 401);
+  const otherState = await (await other(sharedState)).json();
+  assert.deepEqual(otherState.entries, []);
+  assert.equal((await other(sharedState, synced)).status, 409);
+  assert.equal((await other(sharedState, { ...otherState, entries: [['other', 'isolated']] })).status, 200);
+  assert.deepEqual(await (await owner(sharedState)).json(), synced);
+  assert.equal((await owner(publicationPath(project.id), { action: 'unpublish' })).status, 200);
+  assert.equal((await other(sharedState)).status, 404);
+  assert.deepEqual(await (await owner(save)).json(), synced);
+});
+
+test('真实浏览器操作登录弹窗、发布、跨设备历史和下线', {
+  skip: !process.env.TEST_CHROME && '需要设置 TEST_CHROME'
+}, async t => {
+  const base = await listen(t, studio());
+  const account = await register(client(base));
+  const { chromium } = await import('playwright-core');
+  const browser = await chromium.launch({ executablePath: process.env.TEST_CHROME, chromiumSandbox: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const owner = await context.newPage();
+  const second = await (await browser.newContext()).newPage();
+  const guest = await (await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true })).newPage();
+  const errors = [];
+  for (const page of [owner, second, guest]) page.on('pageerror', error => errors.push(error.message));
+  let generationCalls = 0;
+  owner.on('request', request => { if (new URL(request.url()).pathname === '/api/generate') generationCalls++; });
+  async function signIn(page) {
+    await page.locator('#username').fill(account.username);
+    await page.locator('#password').fill(account.password);
+    await page.locator('#auth-submit').click();
+    await page.locator('#account-name').waitFor();
+  }
+  async function localSave(frame, width) {
+    await frame.locator('#field-width').fill(width);
+    await frame.locator('#save-calculation').click();
+    await frame.locator('#calculation-history li').first().waitFor();
+  }
+  try {
+    await owner.goto(base);
+    await owner.locator('#home-prompt').fill(examples[0].prompt);
+    await owner.locator('#home-prompt').press('Enter');
+    await owner.locator('#auth-dialog').waitFor();
+    await owner.locator('#auth-switch').click();
+    await owner.locator('#challenge-image').waitFor();
+    await owner.locator('#auth-close').click();
+    assert.equal(await owner.locator('#home-prompt').inputValue(), examples[0].prompt);
+    assert.equal(generationCalls, 0);
+    await owner.locator('#home-form button[type=submit]').click();
+    await signIn(owner);
+    await owner.locator('#publication-open').waitFor();
+    assert.equal(generationCalls, 1);
+    assert.deepEqual(await owner.locator('#development-stages li').evaluateAll(items => items.map(
+      item => [item.getAttribute('aria-label').split('，')[0], item.dataset.state]
+    )), [['需求规划', 'complete'], ['代码生成', 'complete'], ['测试', 'complete'], ['验收', 'complete'], ['完成', 'complete']]);
+    await owner.locator('#versions-open').click();
+    assert.match(await owner.locator('#versions-list').textContent(), /v1.*窗帘预算计算器/);
+    await owner.locator('#versions-close').click();
+
+    const editor = owner.frameLocator('#preview');
+    await localSave(editor, '3');
+    await owner.getByText('工具记录已同步到账号', { exact: true }).waitFor();
+    assert.match(await editor.locator('#calculation-history li').first().innerText(), /600/);
+
+    await second.goto(base);
+    await second.locator('#login-open').click();
+    await signIn(second);
+    await second.goto(owner.url());
+    const secondEditor = second.frameLocator('#preview');
+    assert.match(await secondEditor.locator('#calculation-history li').first().innerText(), /600/);
+    await secondEditor.locator('#field-width').fill('4');
+    await secondEditor.getByRole('button', { name: '加载' }).click();
+    assert.equal(await secondEditor.locator('#field-width').inputValue(), '3');
+
+    await owner.locator('#publication-open').click();
+    await owner.locator('#publish-current').click();
+    await owner.locator('#open-app').waitFor();
+    const url = await owner.locator('#share-url').inputValue();
+    const visitorView = await context.newPage();
+    await visitorView.goto(await owner.locator('#open-guest').getAttribute('href'));
+    const isolated = visitorView.frameLocator('#shared-app');
+    await isolated.locator('#calculation-history-empty').waitFor();
+    assert.equal(await isolated.locator('#calculation-history li').count(), 0);
+    assert.equal((await guest.goto(url)).status(), 200);
+    const publicTool = guest.frameLocator('#shared-app');
+    await localSave(publicTool, '6');
+    assert.match(await publicTool.locator('#calculation-history li').first().innerText(), /1,200/);
+    await guest.reload();
+    assert.match(await publicTool.locator('#calculation-history li').first().innerText(), /1,200/);
+
+    await secondEditor.getByRole('button', { name: '删除' }).click();
+    await second.getByText('工具记录已同步到账号', { exact: true }).waitFor();
+    await second.reload();
+    await secondEditor.locator('#calculation-history-empty').waitFor();
+    assert.equal(await secondEditor.locator('#calculation-history li').count(), 0);
+
+    await owner.locator('#unpublish').click();
+    await owner.getByRole('heading', { name: '应用已下线' }).waitFor();
+    assert.equal((await guest.reload()).status(), 410);
+    await guest.getByRole('heading', { name: '应用已下线' }).waitFor();
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
   }
 });

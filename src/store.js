@@ -30,6 +30,14 @@ export async function createStore(connectionString, schema = 'public') {
       id TEXT PRIMARY KEY, owner TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
       prompt TEXT NOT NULL, html TEXT NOT NULL, checks TEXT NOT NULL, source TEXT NOT NULL, created_at BIGINT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS publications (
+      root_id TEXT PRIMARY KEY REFERENCES projects(id), slug TEXT NOT NULL UNIQUE,
+      version_id TEXT NOT NULL REFERENCES projects(id), active BOOLEAN NOT NULL, updated_at BIGINT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS tool_state (
+      root_id TEXT NOT NULL REFERENCES projects(id), user_id TEXT NOT NULL REFERENCES users(id),
+      data TEXT NOT NULL, revision INTEGER NOT NULL, PRIMARY KEY (root_id, user_id)
+    );
     CREATE INDEX IF NOT EXISTS projects_owner_date ON projects(owner, created_at DESC);
     `);
     await pool.query('DELETE FROM sessions WHERE expires_at <= $1', [Date.now()]);
@@ -69,8 +77,9 @@ export async function createStore(connectionString, schema = 'public') {
   }
   const findProject = id => first('SELECT * FROM projects WHERE id = $1', [id]);
   async function saveProject(project, owner, prompt, id = identifier()) {
-    const results = project.parentId || project.plan ? {
-      items: project.checks, parentId: project.parentId, plan: project.plan, model: project.model, logs: project.logs
+    const results = project.timeline || project.parentId || project.plan ? {
+      items: project.checks, parentId: project.parentId, plan: project.plan, model: project.model, logs: project.logs,
+      rootId: project.rootId, managed: Boolean(project.timeline), timeline: project.timeline
     } : project.checks;
     const row = await first(`INSERT INTO projects VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT(id) DO NOTHING RETURNING *`, [
@@ -78,6 +87,43 @@ export async function createStore(connectionString, schema = 'public') {
       project.html, JSON.stringify(results), project.source, Date.now()
     ]);
     return row ?? await findProject(id);
+  }
+  async function projectRoot(project) {
+    const facts = JSON.parse(project.checks);
+    if (facts.rootId || !facts.parentId) return facts.rootId ?? project.id;
+    const root = await first(`WITH RECURSIVE ancestors AS (
+      SELECT id, owner, checks, 0 AS depth FROM projects WHERE id = $1
+      UNION ALL
+      SELECT parent.id, parent.owner, parent.checks, child.depth + 1
+      FROM ancestors child JOIN projects parent ON parent.id = (child.checks::jsonb ->> 'parentId')
+      WHERE parent.owner = child.owner
+    ) SELECT id FROM ancestors ORDER BY depth DESC LIMIT 1`, [project.id]);
+    return root.id;
+  }
+  async function versions(rootId, owner) {
+    const { rows } = await pool.query(`WITH RECURSIVE versions(id) AS (
+      SELECT $1::text
+      UNION
+      SELECT projects.id FROM projects JOIN versions ON (projects.checks::jsonb ->> 'parentId') = versions.id
+      WHERE projects.owner = $2
+    ) SELECT projects.id, title, source, created_at FROM projects JOIN versions USING (id)
+      WHERE owner = $2 ORDER BY created_at, projects.id`, [rootId, owner]);
+    return rows;
+  }
+  function setPublication(rootId, versionId, active) {
+    return first(`INSERT INTO publications (root_id, slug, version_id, active, updated_at)
+      VALUES ($1, $2, $3, $4, $5) ON CONFLICT (root_id) DO UPDATE SET
+      version_id = CASE WHEN EXCLUDED.active THEN EXCLUDED.version_id ELSE publications.version_id END,
+      active = EXCLUDED.active, updated_at = EXCLUDED.updated_at
+      RETURNING *`, [rootId, identifier(), versionId, active, Date.now()]);
+  }
+  function writeToolState(rootId, userId, entries, revision) {
+    const data = JSON.stringify(entries);
+    return revision === 0
+      ? first(`INSERT INTO tool_state VALUES ($1, $2, $3, 1)
+        ON CONFLICT (root_id, user_id) DO NOTHING RETURNING revision`, [rootId, userId, data])
+      : first(`UPDATE tool_state SET data = $3, revision = revision + 1
+        WHERE root_id = $1 AND user_id = $2 AND revision = $4 RETURNING revision`, [rootId, userId, data, revision]);
   }
   async function challenge(current, shapes, position) {
     const id = identifier();
@@ -96,7 +142,10 @@ export async function createStore(connectionString, schema = 'public') {
       await pool.query('INSERT INTO users VALUES ($1, $2, $3, $4, $5)', [id, handle, username, salt, passwordHash]);
       return id;
     },
-    project: findProject,
+    project: findProject, projectRoot, versions, setPublication, writeToolState,
+    publication: id => first('SELECT * FROM publications WHERE root_id = $1', [id]),
+    share: slug => first('SELECT * FROM publications WHERE slug = $1', [slug]),
+    toolState: (rootId, userId) => first('SELECT data, revision FROM tool_state WHERE root_id = $1 AND user_id = $2', [rootId, userId]),
     projects: async owner => (await pool.query(
       'SELECT * FROM projects WHERE owner = $1 ORDER BY created_at DESC, id DESC LIMIT 30', [owner])).rows,
     getChallenge: (id, current) => first(

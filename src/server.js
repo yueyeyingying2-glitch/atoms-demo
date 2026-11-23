@@ -31,13 +31,13 @@ function json(res, status, value) {
   res.end(JSON.stringify(value));
 }
 
-async function body(req) {
+async function body(req, maxBytes = 16_384) {
   if (!req.headers['content-type']?.startsWith('application/json')) throw new HttpError(415, '需要 JSON 格式');
   let size = 0;
   const chunks = [];
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 16_384) throw new HttpError(413, '输入内容过长');
+    if (size > maxBytes) throw new HttpError(413, '输入内容过长');
     chunks.push(chunk);
   }
   let result;
@@ -66,20 +66,61 @@ function workspaceOwner(session) {
 }
 
 function projectResponse(row, details = false) {
+  const testResults = JSON.parse(row.checks);
   const project = {
     id: row.id, kind: row.kind, title: row.title, description: row.description,
-    source: row.source, createdAt: Number(row.created_at), url: row.source === 'draft' ? null : '/apps/' + row.id
+    source: row.source, createdAt: Number(row.created_at),
+    url: row.source === 'draft' || testResults.managed ? null : '/apps/' + row.id
   };
   if (details) {
-    const testResults = JSON.parse(row.checks);
     project.prompt = row.prompt;
     project.checks = Array.isArray(testResults) ? testResults : testResults.items;
     project.html = row.html;
-    for (const key of ['parentId', 'plan', 'model', 'logs']) {
+    for (const key of ['parentId', 'plan', 'model', 'logs', 'timeline']) {
       if (testResults[key] !== undefined) project[key] = testResults[key];
     }
   }
   return project;
+}
+
+function publicationInfo(publication, row) {
+  if (publication) {
+    return {
+      status: publication.active ? 'published' : 'offline',
+      url: publication.active ? '/s/' + publication.slug : null,
+      versionId: publication.version_id,
+      updatedAt: Number(publication.updated_at)
+    };
+  }
+  const available = row.source !== 'draft' && !JSON.parse(row.checks).managed;
+  return {
+    status: available ? 'legacy' : 'unpublished',
+    url: available ? '/apps/' + row.id : null,
+    versionId: available ? row.id : null
+  };
+}
+
+function canPublish(row) {
+  const facts = JSON.parse(row.checks);
+  const checks = Array.isArray(facts) ? facts : facts.items;
+  return row.source !== 'draft' && checks.length > 0 && checks.every(check => check.passed === true);
+}
+
+function renderPreview(res, row, stateful = false) {
+  res.writeHead(200, { 'Content-Type': htmlType, 'X-Frame-Options': 'SAMEORIGIN',
+    'Content-Security-Policy': previewPolicy, 'Referrer-Policy': 'no-referrer' });
+  res.end(stateful || row.kind === 'web' ? previewDocument(row.html) : row.html);
+}
+
+function exportProject(res, row) {
+  res.writeHead(200, { 'Content-Type': htmlType, 'Content-Security-Policy': "default-src 'none'; sandbox",
+    'Content-Disposition': 'attachment; filename="' + row.id + '.html"' });
+  res.end(downloadDocument(row.html));
+}
+
+function offline(res) {
+  res.writeHead(410, { 'Content-Type': htmlType, 'Content-Security-Policy': "default-src 'none'; style-src 'self'; frame-ancestors 'none'" });
+  res.end('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>应用已下线</title><link rel="stylesheet" href="/styles.css"><main class="offline-page"><h1>应用已下线</h1><p>请联系发布者获取可用链接。</p></main></html>');
 }
 
 const safetyHeaders = {
@@ -120,6 +161,42 @@ export async function createStudioServer(options = {}) {
     }
   }
 
+  async function detailsFor(row, current) {
+    const root = await store.projectRoot(row);
+    const [publication, versions] = await Promise.all([
+      store.publication(root), store.versions(root, row.owner)
+    ]);
+    const info = publicationInfo(publication, row);
+    return {
+      ...projectResponse(row, true), url: info.url, publication: info,
+      canPublish: row.owner !== seedOwner && canPublish(row),
+      stateUrl: current.user_id && row.owner !== seedOwner ? '/api/projects/' + row.id + '/state' : null,
+      versions: versions.map((version, index) => ({
+        id: version.id, title: version.title, source: version.source,
+        number: index + 1, createdAt: Number(version.created_at)
+      }))
+    };
+  }
+
+  async function serveState(req, res, root, current) {
+    if (req.method === 'GET') {
+      const state = await store.toolState(root, current.user_id);
+      return json(res, 200, { entries: state ? JSON.parse(state.data) : [], revision: state?.revision ?? 0, account: current.user_id });
+    }
+    limit('tool-state:' + current.user_id, 180, 60_000);
+    const { entries, revision, account } = await body(req, 131_072);
+    if (account !== current.user_id) throw new HttpError(409, '当前账号已切换，请刷新工具');
+    if (!Number.isInteger(revision) || revision < 0 || revision >= 2_147_483_647
+      || !Array.isArray(entries) || entries.length > 512 || JSON.stringify(entries).length > 32_000
+      || !entries.every(item => Array.isArray(item) && item.length === 2 && item.every(value => typeof value === 'string'))
+      || new Set(entries.map(item => item[0])).size !== entries.length) {
+      throw new HttpError(400, '工具记录格式无效');
+    }
+    const saved = await store.writeToolState(root, current.user_id, entries, revision);
+    if (!saved) throw new HttpError(409, '工具记录已在另一个页面更新，请刷新后再保存');
+    return json(res, 200, saved);
+  }
+
   async function route(req, res) {
     for (const [key, value] of Object.entries(safetyHeaders)) res.setHeader(key, value);
     const path = new URL(req.url, 'http://local').pathname;
@@ -155,36 +232,60 @@ export async function createStudioServer(options = {}) {
       return res.end(file.bytes);
     }
 
+    const shareMatch = path.match(/^\/s\/([A-Za-z0-9_-]{16})(?:\/(content|download))?$/);
+    if (method === 'GET' && shareMatch) {
+      const publication = await store.share(shareMatch[1]);
+      if (!publication) throw new HttpError(404, '这个应用链接不存在');
+      if (!publication.active) return offline(res);
+      const row = await store.project(publication.version_id);
+      if (shareMatch[2] === 'content') return renderPreview(res, row, true);
+      if (shareMatch[2] === 'download') return exportProject(res, row);
+      const share = '/s/' + publication.slug;
+      const guest = new URL(req.url, 'http://local').searchParams.get('guest') === '1';
+      res.writeHead(200, { 'Content-Type': htmlType, 'Content-Security-Policy': viewerPolicy });
+      return res.end(viewerDocument(publication.slug, {
+        content: share + '/content', state: guest ? '' : '/api/shared/' + publication.slug + '/state'
+      }));
+    }
     const publicMatch = path.match(/^\/(apps|preview)\/([a-zA-Z0-9_-]{4,36})(\/download)?$/);
     if (method === 'GET' && publicMatch) {
       const isPreview = publicMatch[1] === 'preview';
       const row = await store.project(publicMatch[2]);
       if (!row) throw new HttpError(404, '这个应用链接不存在');
-      if (row.source === 'draft') {
-        const current = isPreview && await getSession(req, store);
-        if (!current || row.owner !== workspaceOwner(current)) throw new HttpError(404, '这个应用链接不存在');
+      const facts = JSON.parse(row.checks);
+      const publication = await store.publication(await store.projectRoot(row));
+      if (isPreview) {
+        if (publication || facts.managed || row.source === 'draft') {
+          const current = await getSession(req, store);
+          if (!current || row.owner !== workspaceOwner(current)) throw new HttpError(404, '这个应用链接不存在');
+        }
+        return renderPreview(res, row, Boolean(facts.managed || publication));
       }
+      if (facts.managed || row.source === 'draft') throw new HttpError(404, '这个应用链接不存在');
+      if (publication) {
+        if (!publication.active) return offline(res);
+        res.writeHead(302, { Location: '/s/' + publication.slug + (publicMatch[3] ?? '') });
+        return res.end();
+      }
+      if (publicMatch[3]) return exportProject(res, row);
       if (row.kind === 'web') {
-        if (isPreview) {
-          res.writeHead(200, { 'Content-Type': htmlType, 'X-Frame-Options': 'SAMEORIGIN',
-            'Content-Security-Policy': previewPolicy, 'Referrer-Policy': 'no-referrer' });
-          return res.end(previewDocument(row.html));
-        }
-        if (publicMatch[3]) {
-          res.writeHead(200, { 'Content-Type': htmlType, 'Content-Security-Policy': "default-src 'none'; sandbox",
-            'Content-Disposition': 'attachment; filename="' + row.id + '.html"' });
-          return res.end(downloadDocument(row.html));
-        }
         res.writeHead(200, { 'Content-Type': htmlType, 'Content-Security-Policy': viewerPolicy });
         return res.end(viewerDocument(row.id));
       }
-      res.writeHead(200, {
-        'Content-Type': htmlType,
-        'X-Frame-Options': isPreview ? 'SAMEORIGIN' : 'DENY',
-        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors " + (isPreview ? "'self'" : "'none'"),
-        ...(publicMatch[3] && !isPreview ? { 'Content-Disposition': 'attachment; filename="' + row.id + '.html"' } : {})
-      });
+      res.writeHead(200, { 'Content-Type': htmlType,
+        'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" });
       return res.end(row.html);
+    }
+    const sharedStateMatch = path.match(/^\/api\/shared\/([A-Za-z0-9_-]{16})\/state$/);
+    if (sharedStateMatch && ['GET', 'POST'].includes(method)) {
+      const publication = await store.share(sharedStateMatch[1]);
+      if (!publication?.active) throw new HttpError(404, '这个应用链接不存在');
+      const current = await getSession(req, store);
+      if (!current?.user_id) {
+        if (method === 'GET') return json(res, 200, { guest: true });
+        throw new HttpError(401, '请登录后保存到账号');
+      }
+      return serveState(req, res, publication.root_id, current);
     }
     if (method === 'GET' && path === '/api/bootstrap') {
       const current = await sessionForRequest();
@@ -256,17 +357,30 @@ export async function createStudioServer(options = {}) {
       cookie(res, '', secure);
       return json(res, 200, { user: null });
     }
-    const privateMatch = path.match(/^\/api\/projects\/([a-zA-Z0-9_-]{4,36})$/);
-    if (method === 'GET' && privateMatch) {
-      const current = await sessionForRequest();
+    const privateMatch = path.match(/^\/api\/projects\/([a-zA-Z0-9_-]{4,36})(?:\/(publication|state|download))?$/);
+    if (privateMatch && ['GET', 'POST'].includes(method)) {
+      const current = await getSession(req, store);
       const row = await store.project(privateMatch[1]);
-      if (!row || (row.owner !== seedOwner && row.owner !== workspaceOwner(current))) {
+      if (!row || (row.owner !== seedOwner && (!current || row.owner !== workspaceOwner(current)))) {
         throw new HttpError(404, '找不到这个生成记录');
       }
-      return json(res, 200, projectResponse(row, true));
+      const operation = privateMatch[2];
+      if (!operation && method === 'GET') return json(res, 200, await detailsFor(row, current ?? {}));
+      if (operation === 'download' && method === 'GET' && canPublish(row)) return exportProject(res, row);
+      if (!current?.user_id || row.owner === seedOwner) throw new HttpError(403, '需要作品所属账号');
+      const root = await store.projectRoot(row);
+      if (operation === 'state') return serveState(req, res, root, current);
+      if (operation === 'publication' && method === 'POST') {
+        const { action } = await body(req);
+        if (!['publish', 'unpublish'].includes(action)) throw new HttpError(400, '发布操作无效');
+        if (action === 'publish' && !canPublish(row)) throw new HttpError(409, '只有通过验收的版本可以发布');
+        const published = await store.setPublication(root, row.id, action === 'publish');
+        return json(res, 200, publicationInfo(published, row));
+      }
     }
     if (method === 'POST' && path === '/api/generate') {
-      const current = await sessionForRequest();
+      const current = await getSession(req, store);
+      if (!current?.user_id) throw new HttpError(401, '请登录或注册后生成应用');
       const input = await body(req);
       const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
       if (prompt.length < 2 || prompt.length > 800) throw new HttpError(400, '请填写 2–800 字的应用描述');
@@ -282,14 +396,23 @@ export async function createStudioServer(options = {}) {
       res.on('close', () => cancellation.abort());
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'X-Accel-Buffering': 'no' });
       res.flushHeaders();
+      const started = performance.now();
+      const timeline = [];
+      function track(stage, message) {
+        const entry = { stage, message, elapsedMs: Math.round(performance.now() - started) };
+        timeline.push(entry);
+        return entry;
+      }
       function emit(stage, message, data = {}) {
-        if (!res.destroyed) res.write(JSON.stringify({ stage, message, ...data }) + '\n');
+        const entry = track(stage, message);
+        if (!res.destroyed) res.write(JSON.stringify({ ...entry, ...data }) + '\n');
       }
       try {
         let project;
+        let parent;
         if (agent ? input.projectId : isRevision(prompt)) {
           const id = typeof input.projectId === 'string' && /^[\w-]{4,36}$/.test(input.projectId) ? input.projectId : '';
-          const parent = id && await store.project(id);
+          parent = id && await store.project(id);
           if (!parent || (parent.owner !== owner && parent.owner !== seedOwner)) {
             emit('error', '请先打开你生成的应用，再输入修改要求。');
             return;
@@ -305,13 +428,21 @@ export async function createStudioServer(options = {}) {
           emit('error', project.error);
         } else if (!project) {
           emit('error', '当前支持计算器、数字合成游戏和秒表。请试试首页示例，或者换一个更具体的描述。');
-        } else if (project.kind !== 'web' && !project.checks.every(test => test.passed)) {
-          emit('error', '有测试项未通过，请修改需求后重试。', { checks: project.checks });
-        } else if (!res.destroyed) {
-          const saved = await store.saveProject(project, owner, prompt);
-          const draft = saved.source === 'draft';
-          const message = draft ? '验收未全部通过，已保存私有草稿' : '测试通过，分享链接已生成';
-          emit(draft ? 'draft' : 'done', message, { project: projectResponse(saved, true) });
+        } else {
+          const passed = project.checks.length > 0 && project.checks.every(test => test.passed === true);
+          emit('verify', passed ? '验收通过，可以发布此版本' : '验收未通过，请查看测试结果');
+          if (!passed && project.kind !== 'web') {
+            emit('error', '有测试项未通过，请修改需求后重试。', { checks: project.checks });
+          } else if (!res.destroyed) {
+            const draft = project.source === 'draft';
+            const ending = track(draft ? 'draft' : 'done',
+              draft ? '已保存未通过验收的草稿' : '已完成，可以在工作台发布');
+            const rootId = parent?.owner === owner ? await store.projectRoot(parent) : undefined;
+            if (res.destroyed) return;
+            const saved = await store.saveProject({ ...project, rootId, timeline }, owner, prompt);
+            const details = await detailsFor(saved, current);
+            if (!res.destroyed) res.write(JSON.stringify({ ...ending, project: details }) + '\n');
+          }
         }
       } catch {
         emit('error', '生成失败，请稍后重试。');

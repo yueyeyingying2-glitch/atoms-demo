@@ -100,13 +100,37 @@ function testGame(doc, win, spec, check, restartDoc) {
   });
   check('一次移动只合并一遍', () => {
     doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
-    return tiles()[0] === 4 && tiles()[1] === 4 && score() === 8;
+    return tiles()[0] === 4 && tiles()[1] === 4 && score() === 8
+      && doc.getElementById('best-score').textContent === '8';
   });
   check('撤回一步并可重新开局', () => {
     doc.getElementById('undo').click();
     if (score() !== 0 || tiles().slice(0, 4).join(',') !== '2,2,2,2') return false;
     doc.getElementById('new-game').click();
-    return score() === 0 && tiles().filter(Boolean).length === 2;
+    return score() === 0 && tiles().filter(Boolean).length === 2
+      && doc.getElementById('best-score').textContent === '8';
+  });
+  check('WASD 操作和 90%/10% 出块边界', () => {
+    const base = Array(spec.size ** 2).fill(0);
+    base[0] = base[1] = 2;
+    for (const [chance, expected] of [[0.899, 2], [0.9, 4]]) {
+      const dom = restartDoc(base, { chance });
+      try {
+        const document = dom.window.document;
+        document.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'a', bubbles: true }));
+        const live = [...document.querySelectorAll('[data-tile]')].map(tile => Number(tile.dataset.tile)).filter(Boolean);
+        if (live.join(',') !== '4,' + expected) return false;
+      } finally {
+        dom.window.close();
+      }
+    }
+    return true;
+  });
+  check('可恢复保存的最高分', () => {
+    const saved = JSON.parse(win.localStorage.getItem('studio:tiles:' + spec.size + ':' + spec.target));
+    const dom = restartDoc(saved.board, { saved });
+    try { return dom.window.document.getElementById('best-score').textContent === '8'; }
+    finally { dom.window.close(); }
   });
   check('达到目标展示获胜结果', () => {
     const board = Array(spec.size ** 2).fill(0);
@@ -115,10 +139,24 @@ function testGame(doc, win, spec, check, restartDoc) {
     try {
       const document = dom.window.document;
       document.querySelector('[data-move="left"]').click();
-      return document.getElementById('game-status').textContent === '挑战成功！';
+      const popup = document.getElementById('game-outcome');
+      if (!popup.open || document.getElementById('outcome-title').textContent !== '合成成功！') return false;
+      document.getElementById('continue-game').click();
+      return !popup.open && Number(document.querySelector('[data-tile]').dataset.tile) === spec.target;
     } finally {
       dom.window.close();
     }
+  });
+  check('棋盘走满后提示结束并可重新开始', () => {
+    const board = Array.from({ length: spec.size ** 2 }, (_, i) => (Math.floor(i / spec.size) + i % spec.size) % 2 ? 4 : 2);
+    const dom = restartDoc(board);
+    try {
+      const document = dom.window.document;
+      const popup = document.getElementById('game-outcome');
+      if (!popup.open || document.getElementById('outcome-title').textContent !== '游戏结束') return false;
+      popup.querySelector('[data-restart]').click();
+      return !popup.open && [...document.querySelectorAll('[data-tile]')].filter(tile => Number(tile.dataset.tile)).length === 2;
+    } finally { dom.window.close(); }
   });
 }
 
@@ -131,7 +169,7 @@ export function checkArtifact(html, spec, prompt) {
   const timers = new Map();
   let timerId = 0;
 
-  function open(board) {
+  function open(board, { chance = 0, saved } = {}) {
     return new JSDOM(html, {
       url: 'https://artifact.test/apps/check',
       runScripts: 'dangerously',
@@ -141,10 +179,10 @@ export function checkArtifact(html, spec, prompt) {
         Object.defineProperty(window.performance, 'now', { value: () => time });
         window.setInterval = callback => { timers.set(++timerId, callback); return timerId; };
         window.clearInterval = id => timers.delete(id);
-        window.Math.random = () => 0;
+        window.Math.random = () => chance;
         if (board) {
-          const key = 'studio:tiles:/apps/check:' + spec.size + ':' + spec.target;
-          window.localStorage.setItem(key, JSON.stringify({ board, score: 0, undoUsed: false }));
+          const key = 'studio:tiles:' + spec.size + ':' + spec.target;
+          window.localStorage.setItem(key, JSON.stringify(saved ?? { board, score: 0, undoUsed: false }));
         }
       }
     });

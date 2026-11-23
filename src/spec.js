@@ -21,11 +21,11 @@ export const examples = [
     spec: curtain
   },
   {
-    id: 'tile-challenge',
-    prompt: '做一个 2048 小游戏，简单说明游戏规则。',
+    id: 'merge-grid',
+    prompt: '用原生 HTML、CSS、JavaScript 做一个独立单文件的 4×4 数字合成游戏。支持方向键、WASD 和触摸滑动。每次有效移动后以 90% 概率出 2、10% 概率出 4，同一方块每步最多合并一次。显示分数并保存最高分。合出 2048 后提示胜利并可继续，无法移动时显示结束和重新开始。使用原创配色和平滑动画，兼容手机和电脑。',
     spec: {
-      kind: 'game', title: '数字合成挑战', size: 5, target: 2048,
-      description: '移动数字方块，把相同数字合在一起。'
+      kind: 'game', title: '方阵合成', size: 4, target: 2048,
+      description: '滑动方阵，让相同数字相遇。试试合到 2048。'
     }
   },
   {
@@ -66,7 +66,8 @@ export function fallbackSpec(prompt) {
   if (/2048|合成.*(?:游戏|挑战)|数字.*合成|merge.*tile/i.test(prompt)) {
     const game = examples[1].spec;
     const target = Number(prompt.match(/(?:目标|合出|达到)\s*(256|512|1024|2048|4096)\b/)?.[1]);
-    return { ...game, size: /6\s*[x×*]\s*6/.test(prompt) ? 6 : 5, target: target || game.target };
+    const size = Number(prompt.match(/([456])\s*[x×*]\s*\1/i)?.[1]);
+    return { ...game, size: size || game.size, target: target || game.target };
   }
   if (/秒表|计时器|stopwatch/i.test(prompt)) {
     return { ...examples[2].spec, laps: /计次|记圈|圈速|分段记录/.test(prompt) };
@@ -87,7 +88,7 @@ const systemPrompt = `你为一个中文应用生成器生成 JSON 对象，程�
 1. calculator。例：{"kind":"calculator","title":"折扣计算器","description":"输入价格和折扣比例。","fields":[{"id":"price","label":"原价","unit":"元","value":100,"min":0},{"id":"rate","label":"折扣比例","unit":"%","value":80,"min":0}],"formula":{"op":"div","args":[{"op":"mul","args":["price","rate"]},100]},"resultLabel":"折后金额","unit":"元"}。
 formula 的元素只能是数字、字段 id 或 {op,args}，op 支持 add、sub、mul、div。sub、div 恰好两个参数。
 字段 id 是短英文标识符。字段数量 1 到 6。默认值要能算出有限结果。准确实现用户指定的字段和运算。
-2. game。格式 {"kind":"game","title":"数字合成挑战","description":"移动并合并相同数字。","size":5,"target":2048}。仅支持原创数字合成变体，尺寸 5 或 6，目标 256、512、1024、2048、4096。
+2. game。格式 {"kind":"game","title":"数字合成挑战","description":"移动并合并相同数字。","size":4,"target":2048}。仅支持原创数字合成变体，尺寸 4、5 或 6，目标 256、512、1024、2048、4096。
 3. stopwatch。格式 {"kind":"stopwatch","title":"秒表","description":"用于精确计时。","laps":false}。功能包括开始、暂停、继续、归零，用户要求计次、记圈或分段记录时将 laps 设为 true。
 超出三类时输出 {"kind":"unsupported"}。字段内容是普通文本。请勿输出 JavaScript、HTML 或 Markdown。`;
 
@@ -116,7 +117,7 @@ export function validateSpec(input) {
   const common = { kind, title, description };
   if (kind === 'stopwatch') return { ...common, laps: input.laps === true };
   if (kind === 'game') {
-    if (![5, 6].includes(input.size) || ![256, 512, 1024, 2048, 4096].includes(input.target)) {
+    if (![4, 5, 6].includes(input.size) || ![256, 512, 1024, 2048, 4096].includes(input.target)) {
       throw new Error('游戏棋盘或目标不正确');
     }
     return { ...common, size: input.size, target: input.target };

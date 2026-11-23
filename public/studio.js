@@ -1,4 +1,4 @@
-import { connectPreview, openPreview } from './preview.js';
+import { closePreview, connectPreview, openPreview, waitForPreviewSave } from './preview.js';
 
 const $ = id => document.getElementById(id);
 const home = $('home');
@@ -7,10 +7,17 @@ const promptInput = $('home-prompt');
 const workInput = $('work-prompt');
 const auth = $('auth-dialog');
 const preview = $('preview');
+const publicationDialog = $('publication-dialog');
+const versionsDialog = $('versions-dialog');
+const stages = [['plan', '需求规划'], ['build', '代码生成'], ['check', '测试'], ['verify', '验收'], ['done', '完成']];
+const stageNames = { repair: 'check', fallback: 'build' };
 const captions = { example: '预置示例', model: '模型生成', fallback: '演示模式', revision: '修改版本', draft: '私有草稿' };
 const tabs = ['preview', 'tests', 'code'];
 connectPreview(preview);
 let engine = 'demo';
+let currentUser;
+let generationIntent;
+let stageEntries = [];
 let currentProject;
 let generating = false;
 let generationRequest;
@@ -45,6 +52,7 @@ function notify(message) {
 }
 
 function paintAccount(user) {
+  currentUser = user;
   $('login-open').hidden = $('register-open').hidden = Boolean(user);
   $('account-name').hidden = $('logout').hidden = !user;
   $('account-name').textContent = user?.username ?? '';
@@ -168,25 +176,37 @@ function showChecks(checks = [], logs = []) {
   }
 }
 
+function showPreview(refresh = false) {
+  if (!currentProject) return;
+  const { id, kind, stateUrl } = currentProject;
+  $('storage-status').hidden = true;
+  void openPreview(preview, id, {
+    refresh, state: stateUrl, withStorage: Boolean(stateUrl || kind === 'web'),
+    status(message) {
+      $('storage-status').textContent = message;
+      $('storage-status').hidden = !message;
+    }
+  });
+}
+
 function showProject(project) {
   currentProject = project;
-  $('result-meta').hidden = false;
-  $('publish-actions').hidden = $('download-app').hidden = !project.url;
+  $('result-meta').hidden = $('publish-actions').hidden = false;
+  $('download-app').hidden = !project.canPublish;
+  $('download-app').href = '/api/projects/' + project.id + '/download';
   $('result-title').textContent = project.title;
-  $('source-tag').textContent = project.model ? 'DeepSeek · ' + project.model + (project.url ? '' : ' · 私有草稿') : captions[project.source];
-  $('previous-version').hidden = !project.parentId;
-  if (project.url) {
-    $('open-app').href = project.url;
-    $('download-app').href = project.url + '/download';
-  }
+  $('source-tag').textContent = project.model ? 'DeepSeek · ' + project.model + (project.source === 'draft' ? ' · 私有草稿' : '') : captions[project.source];
+  const version = project.versions.find(item => item.id === project.id);
+  $('version-tag').textContent = version ? 'v' + version.number : '';
+  paintPublication();
   $('empty-preview').hidden = true;
   preview.hidden = false;
-  openPreview(preview, project.id, project.kind === 'web');
+  showPreview();
   $('project-code').textContent = project.html ?? '';
   showPlan(project.plan);
   showChecks(project.checks, project.logs);
   updateComposer();
-  selectTab(project.url ? 'preview' : 'tests');
+  selectTab(project.source === 'draft' ? 'tests' : 'preview');
 }
 
 function clearProject() {
@@ -195,9 +215,10 @@ function clearProject() {
   $('publish-actions').hidden = true;
   $('empty-preview').hidden = false;
   preview.hidden = true;
-  preview.removeAttribute('src');
+  closePreview(preview);
+  $('storage-status').hidden = true;
   $('request-bubble').hidden = true;
-  $('progress').replaceChildren();
+  resetStages();
   $('empty-activity').hidden = false;
   $('run-status').hidden = true;
   $('project-code').textContent = '';
@@ -213,12 +234,51 @@ function showPrompt(prompt) {
   $('empty-activity').hidden = true;
 }
 
-function addStage(stage, message) {
+function renderStages() {
+  const list = $('development-stages');
+  list.hidden = !stageEntries.length;
+  const phase = event => stages.findIndex(([name]) => name === (stageNames[event.stage] ?? event.stage));
+  const markers = stageEntries.filter(event => phase(event) >= 0);
+  const last = stageEntries.at(-1)?.stage;
+  const index = markers.length ? phase(markers.at(-1)) : 0;
+  list.replaceChildren(...stages.map(([key, label], at) => {
+    let state = at < index || last === 'done' ? 'complete' : at === index ? 'active' : 'pending';
+    if (at === index && ['error', 'draft', 'cancelled'].includes(last)) state = last === 'cancelled' ? 'stopped' : 'failed';
+    const caption = { complete: '已完成', active: '进行中', pending: '待开始', failed: '未通过', stopped: '已取消' }[state];
+    const row = node('li');
+    row.dataset.state = state;
+    row.setAttribute('aria-label', label + '，' + caption);
+    if (state === 'active') row.setAttribute('aria-current', 'step');
+    const mark = node('span', state === 'complete' ? '✓' : state === 'failed' ? '!' : state === 'active' ? '●' : '', 'stage-mark');
+    mark.setAttribute('aria-hidden', 'true');
+    const text = node('span', label, 'stage-text');
+    const start = markers.find(event => phase(event) === at)?.elapsedMs;
+    const end = markers.find(event => phase(event) > at)?.elapsedMs;
+    if (key !== 'done' && Number.isFinite(start) && Number.isFinite(end)) {
+      const seconds = Math.max(0, (end - start) / 1000);
+      const time = node('time', seconds < 0.1 ? '<0.1 秒' : seconds.toFixed(1) + ' 秒');
+      time.dateTime = 'PT' + seconds + 'S';
+      text.append(time);
+    }
+    row.append(mark, text);
+    return row;
+  }));
+}
+
+function resetStages() {
+  stageEntries = [];
+  $('progress').replaceChildren();
+  renderStages();
+}
+
+function addStage(stage, message, elapsedMs) {
+  stageEntries.push({ stage, message, elapsedMs });
   const item = node('li', message);
   item.dataset.stage = stage;
   $('progress').lastElementChild?.removeAttribute('aria-current');
   item.setAttribute('aria-current', 'step');
   $('progress').append(item);
+  renderStages();
 }
 
 async function loadProject(id, updateLocation = false) {
@@ -226,9 +286,14 @@ async function loadProject(id, updateLocation = false) {
     const project = await api('/api/projects/' + encodeURIComponent(id));
     if (updateLocation) navigate('/studio?project=' + project.id);
     else if (new URLSearchParams(location.search).get('project') !== id) return;
-    $('progress').replaceChildren();
+    resetStages();
     $('run-status').hidden = true;
-    addStage(project.url ? 'done' : 'draft', '已恢复保存的版本');
+    if (project.timeline?.length) {
+      for (const item of project.timeline) addStage(item.stage, item.message, item.elapsedMs);
+    } else {
+      if (project.source === 'draft') addStage('verify', '验收未通过');
+      addStage(project.source === 'draft' ? 'draft' : 'done', '已恢复保存的版本');
+    }
     showPrompt(project.prompt);
     showProject(project);
   } catch (error) {
@@ -244,10 +309,18 @@ function readRoute() {
   if (!id) clearProject();
 }
 
+function requireLogin(request, followUp) {
+  generationIntent = { request, followUp };
+  openAuth('login');
+}
+
 async function generate(prompt, followUp) {
   const request = prompt.trim();
   if (generating) return;
   if (request.length < 2) return notify('请多写几个字，描述你要生成的应用');
+  await ready;
+  if (generating) return;
+  if (!currentUser) return requireLogin(request, followUp);
   if (!followUp) clearProject();
   const projectId = currentProject?.id;
   generating = true;
@@ -256,7 +329,7 @@ async function generate(prompt, followUp) {
   $('cancel-generation').hidden = false;
   navigate('/studio' + (currentProject ? '?project=' + currentProject.id : ''));
   showPrompt(request);
-  $('progress').replaceChildren();
+  resetStages();
   $('run-status').hidden = false;
   if (!currentProject) showPlan();
   const started = performance.now();
@@ -269,12 +342,16 @@ async function generate(prompt, followUp) {
   const timer = setInterval(updateElapsed, 1000);
   addStage('request', '已提交生成请求');
   try {
-    await ready;
     const response = await fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: request, projectId }),
       signal: generationRequest.signal
     });
+    if (response.status === 401) {
+      paintAccount(null);
+      requireLogin(request, followUp);
+      return;
+    }
     if (!response.ok) throw new Error((await response.json()).error);
     let buffer = '';
     let completed = false;
@@ -284,8 +361,8 @@ async function generate(prompt, followUp) {
       buffer = events.pop();
       for (const line of events) {
         if (!line) continue;
-        const { stage, message, checks, project, plan } = JSON.parse(line);
-        addStage(stage, message);
+        const { stage, message, checks, project, plan, elapsedMs } = JSON.parse(line);
+        addStage(stage, message, elapsedMs);
         if (plan) showPlan(plan);
         if (stage === 'error') {
           completed = true;
@@ -349,23 +426,97 @@ for (const mobile of [false, true]) {
     $('desktop-preview').setAttribute('aria-pressed', String(!mobile));
   });
 }
-$('refresh-preview').addEventListener('click', () => {
-  if (currentProject) openPreview(preview, currentProject.id, currentProject.kind === 'web', true);
-});
-$('cancel-generation').addEventListener('click', () => generationRequest?.abort());
-$('previous-version').addEventListener('click', () => {
-  if (currentProject?.parentId) loadProject(currentProject.parentId, true);
-});
-$('copy-link').addEventListener('click', async () => {
-  if (!currentProject?.url) return;
-  const url = new URL(currentProject.url, location.origin).href;
+$('refresh-preview').addEventListener('click', () => showPreview(true));
+
+function paintPublication() {
+  const info = currentProject?.publication;
+  const button = $('publication-open');
+  button.hidden = !info || (!currentProject.canPublish && !info.url);
+  if (!info) return;
+  button.dataset.status = info.status;
+  button.textContent = info.url ? '已发布' : info.status === 'offline' ? '已下线' : '发布';
+  $('publication-title').textContent = info.url ? '已发布' : info.status === 'offline' ? '应用已下线' : '发布应用';
+  const currentLive = info.versionId === currentProject.id && info.status === 'published';
+  $('publication-description').textContent = info.status === 'legacy'
+    ? '此版本已有公开链接。发布当前版本后可使用固定访问地址。'
+    : info.url ? (currentLive ? '访客正在访问此版本。' : '现有链接仍指向上次发布的版本。')
+      : info.status === 'offline' ? '重新发布后，访客可继续使用原发布链接。' : '发布后会生成手机和电脑都能访问的链接。';
+  $('publish-current').hidden = !currentProject.canPublish || currentLive;
+  $('publish-current').textContent = info.status === 'published' ? '更新为当前版本' : '发布当前版本';
+  $('publication-share').hidden = !info.url;
+  if (info.url) {
+    const url = new URL(info.url, location.origin);
+    $('share-url').value = url.href;
+    $('open-app').href = url.href;
+    url.searchParams.set('guest', '1');
+    $('open-guest').href = url.href;
+  }
+}
+
+async function changePublication(action) {
+  const project = currentProject;
+  const error = $('publication-error');
+  error.hidden = true;
+  $('publish-current').disabled = $('unpublish').disabled = true;
   try {
-    await navigator.clipboard.writeText(url);
+    const info = await api('/api/projects/' + project.id + '/publication', { action });
+    if (currentProject?.id === project.id) {
+      currentProject.publication = info;
+      currentProject.url = info.url;
+      paintPublication();
+    }
+  } catch (failure) {
+    error.textContent = failure.message;
+    error.hidden = false;
+  } finally {
+    $('publish-current').disabled = $('unpublish').disabled = false;
+  }
+}
+
+$('publication-open').addEventListener('click', () => {
+  $('publication-error').hidden = true;
+  paintPublication();
+  publicationDialog.showModal();
+});
+$('publication-close').addEventListener('click', () => publicationDialog.close());
+$('publish-current').addEventListener('click', () => changePublication('publish'));
+$('unpublish').addEventListener('click', () => changePublication('unpublish'));
+$('copy-link').addEventListener('click', async () => {
+  const input = $('share-url');
+  try {
+    await navigator.clipboard.writeText(input.value);
     notify('链接已复制');
   } catch {
-    window.prompt('复制应用链接', url);
+    input.focus();
+    input.select();
+    notify(document.execCommand('copy') ? '链接已复制' : '链接已选中，请复制');
   }
 });
+
+$('versions-open').addEventListener('click', () => {
+  const list = $('versions-list');
+  list.replaceChildren();
+  for (const version of [...currentProject.versions].reverse()) {
+    const row = node('li');
+    const button = node('button');
+    button.type = 'button';
+    if (version.id === currentProject.id) button.setAttribute('aria-current', 'true');
+    const label = node('span', version.title, 'version-info');
+    label.append(node('small', new Date(version.createdAt).toLocaleString('zh-CN')));
+    button.append(node('strong', 'v' + version.number), label);
+    if (currentProject.publication.url && currentProject.publication.versionId === version.id) {
+      button.append(node('span', '已发布', 'version-badge'));
+    } else if (version.source === 'draft') button.append(node('span', '未通过', 'version-badge'));
+    button.addEventListener('click', () => {
+      versionsDialog.close();
+      void loadProject(version.id, true);
+    });
+    row.append(button);
+    list.append(row);
+  }
+  versionsDialog.showModal();
+});
+$('versions-close').addEventListener('click', () => versionsDialog.close());
 
 async function loadChallenge() {
   const request = ++challengeRequest;
@@ -404,6 +555,7 @@ function openAuth(mode) {
   authMode = mode;
   const registering = mode === 'register';
   $('auth-title').textContent = registering ? '注册账号' : '登录';
+  $('auth-reason').hidden = !generationIntent;
   $('auth-submit').textContent = registering ? '注册' : '登录';
   $('password').autocomplete = registering ? 'new-password' : 'current-password';
   $('challenge').hidden = !registering;
@@ -419,7 +571,11 @@ function openAuth(mode) {
 $('register-open').addEventListener('click', () => openAuth('register'));
 $('login-open').addEventListener('click', () => openAuth('login'));
 $('auth-switch').addEventListener('click', () => openAuth(authMode === 'register' ? 'login' : 'register'));
-$('auth-close').addEventListener('click', () => auth.close());
+$('auth-close').addEventListener('click', () => {
+  generationIntent = undefined;
+  auth.close();
+});
+auth.addEventListener('cancel', () => { generationIntent = undefined; });
 $('challenge-refresh').addEventListener('click', loadChallenge);
 $('auth-form').addEventListener('submit', async event => {
   event.preventDefault();
@@ -437,9 +593,13 @@ $('auth-form').addEventListener('submit', async event => {
     if (registering) Object.assign(credentials, { challengeId: challenge.id, choice: picked });
     const data = await api(registering ? '/api/register' : '/api/login', credentials);
     paintAccount(data.user);
+    const intent = auth.open ? generationIntent : undefined;
+    generationIntent = undefined;
     auth.close();
     notify(registering ? '注册成功' : '登录成功');
-    await bootstrap();
+    try { await bootstrap(); } catch {}
+    if (intent) void generate(intent.request, intent.followUp);
+    else readRoute();
   } catch (error) {
     $('auth-error').textContent = error.message;
     if (registering && auth.open) loadChallenge();
@@ -450,6 +610,7 @@ $('auth-form').addEventListener('submit', async event => {
 });
 $('logout').addEventListener('click', async () => {
   try {
+    await waitForPreviewSave(preview);
     await api('/api/logout', {});
     paintAccount(null);
     clearProject();

@@ -1,29 +1,39 @@
 # Atoms Demo
 
-[在线 Demo](http://113.45.177.72:3000/)
+输入一句话，生成一个可操作的单页网页应用。登录后，DeepSeek 将需求拆成可执行的验收用例，生成独立 HTML。Chromium 实际操作页面并返回检查结果。你可以在工作台迭代、切换版本，并将通过验收的版本发布到固定链接。
 
-输入自然语言生成可操作的网页应用。DeepSeek 先列出需求和验收用例，再写出独立 HTML。工作台用 Chromium 操作产物，展示每项的实际结果。登录后可生成和迭代应用。验收通过后可发布、下线和下载对应版本，注册账号可跨设备恢复版本与工具记录。
+[在线 Demo](http://113.45.177.72:3000/) · [3 分钟评审路径](docs/project-guide.md#02-3-分钟评审路径) · [项目说明](docs/project-guide.md) · [项目进度](ROADMAP.md)
 
-## 本地启动
+| 试用成品 | 可以验证 |
+| --- | --- |
+| [窗帘预算计算器](http://113.45.177.72:3000/apps/curtain-budget) | 输入窗宽 3 米、褶皱倍数 2、每米 100 元，得出 600 元。可保存、加载和删除计算方案。 |
+| [2048小游戏](http://113.45.177.72:3000/apps/merge-grid) | 用方向键、WASD、屏幕按钮或滑动操作 4×4 棋盘，刷新后保留最高分。支持[下载 HTML](http://113.45.177.72:3000/apps/merge-grid/download)离线试玩。 |
+| [秒表](http://113.45.177.72:3000/apps/stopwatch) | 验证开始、暂停、继续和归零。 |
 
-使用 Docker Compose 时，在当前终端设置 `POSTGRES_PASSWORD` 后启动应用与 PostgreSQL 16。
+## 快速开始（本地）
+
+### Docker Compose
+
+在当前终端设置 `POSTGRES_PASSWORD`，然后启动应用和 PostgreSQL 16。
 
 ```bash
 docker compose up -d --build --wait
 ```
 
-也可使用 Node.js 24、npm 和独立 PostgreSQL 数据库。先设置 `DATABASE_URL` 为该数据库的连接 URL。
+打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)。应用启动时检查并保存三个试用成品。仅配置数据库时，可以登录后用内置模板生成计算器、数字合成游戏和秒表。
+
+### Node.js
+
+需要 Node.js 24 或以上版本，以及可访问的 PostgreSQL 16 数据库。先设置 `DATABASE_URL`，再运行下列命令。
 
 ```bash
 npm ci
 HOST=127.0.0.1 npm start
 ```
 
-打开 [http://127.0.0.1:3000](http://127.0.0.1:3000)。未设置 DeepSeek Key 时，匹配的内置模板标为「演示模式」。服务器首次启动时会检查并保存三个示例。
+### 启用 DeepSeek
 
-## 启用 DeepSeek
-
-在已设置 `POSTGRES_PASSWORD` 的终端中，通过静默输入读取 Key 并启动浏览器验收服务。
+在已设置 `POSTGRES_PASSWORD` 的终端中，静默输入模型 Key，并启用 `agent` profile 同时启动浏览器验收服务。
 
 ```bash
 printf 'DeepSeek API Key: '
@@ -36,58 +46,65 @@ if [ -n "$DEEPSEEK_API_KEY" ]; then
 fi
 ```
 
-Key 由应用服务读取，默认调用 `deepseek-flash`。部署时使用主机或平台的密钥配置。配置 Key 后同时启用 `agent` Compose profile。浏览器服务通过 Unix socket 接收验收任务，无外部网络和模型或数据库凭据。[DeepSeek API 文档](https://api-docs.deepseek.com/)
+默认模型为 `deepseek-flash`。可以用「做一个每周习惯打卡网页，支持点击打卡和取消，刷新后保留记录」体验自由生成。[DeepSeek API 文档](https://api-docs.deepseek.com/)
 
-体验自由生成时，可以试「做一个房贷提前还款计算器，保存计算方案并在刷新后恢复」或「做一个每周习惯打卡网页，支持点击打卡和取消」。生成完成后，在工作台继续输入修改要求，或者返回首页发起新项目。
+### 端到端验证
 
-设置 `TEST_DATABASE_URL` 指向独立的 PostgreSQL 测试数据库，再运行 `npm test`。测试为每条用例创建独立 schema。要测试 DeepSeek 生成链，再设置 `TEST_QA_SOCKET` 指向浏览器验收服务。测试以本地模拟服务替代 DeepSeek 上游，产物交互由真实 Chromium 执行。可设置 `TEST_CHROME` 为本机 Chrome 可执行路径以同时验证工作台界面。
+设置 `TEST_DATABASE_URL` 指向专用 PostgreSQL 测试库。每条集成用例会创建独立的测试 schema。
 
-在本机运行浏览器服务时，使用 `QA_SOCKET_PATH` 指定短路径，使用 `QA_CHROMIUM_PATH` 指定已安装的 Chrome 可执行文件，然后运行 `node src/qa-worker.js`。
+```bash
+npm test
+```
 
-## 评审操作
+完整回归还需要将 `TEST_QA_SOCKET` 指向浏览器验收服务的 Unix socket，并将 `TEST_CHROME` 指向本机 Chrome 可执行文件。测试用模拟服务替代模型上游，产物交互由真实 Chromium 执行。[验收证据与复现命令](docs/project-guide.md#7-质量证据与复现)
 
-| 输入或操作 | 预期 |
-|---|---|
-| 游客点击生成 | 弹出登录或注册窗口，并保留输入的需求。登录成功后继续本次生成。 |
-| 注册 | 输入用户名和至少 8 字符的密码，按提示点击验证码图片中的图案。 |
-| 退出后登录 | 只输入用户名和密码，工作台可找回该账号的历史。 |
-| 做一个窗帘预算计算器，输入窗宽、褶皱倍数和每米价格，输出预算 | 输入 3、2、100 得到 600 元。保存方案后刷新，仍可加载或删除。用同一账号换浏览器登录后，也能看到记录。 |
-| 做一个 2048 小游戏，简单说明游戏规则 | 打开原创 4×4 数字合成游戏。支持方向键、WASD、触摸及屏幕按钮，最高分刷新后保留。 |
-| 做一个秒表 | 打开产物链接，依次操作开始、暂停、继续和归零。 |
-| 给刚才这个秒表增加计次功能，保留现有操作 | 在「版本历史」可查看两版。发布新版后，同一个分享链接会指向新版。 |
-| 发布和下线 | 打开发布面板，确认发布并复制链接。用无痕或手机窗口验证可操作，点「下线」后刷新显示已下线。 |
+## 环境变量
 
-工作台按「需求规划 → 代码生成 → 测试 → 验收 → 完成」展示状态。可以取消进行中的生成，并在「版本历史」中查看已保存版本。验收失败时 DeepSeek 会尝试修正一次。复验失败的版本留作私有草稿。
+| 变量 | 用途 |
+| --- | --- |
+| `POSTGRES_PASSWORD` | Compose 必填的数据库密码，由当前终端或部署平台提供。 |
+| `DATABASE_URL` | 手动启动 Node.js 时使用的连接 URL。也可通过 `PGHOST`、`PGUSER`、`PGDATABASE`、`PGPASSWORD` 配置。 |
+| `HOST` / `PORT` | Node.js HTTP 监听地址和端口，默认为 `0.0.0.0` 和 `3000`。 |
+| `APP_BIND_ADDRESS` / `APP_PORT` | Compose 对宿主机暴露的地址和端口，默认为 `127.0.0.1` 和 `3000`。 |
+| `PUBLIC_ORIGIN` | 对外访问的完整 origin，用于请求来源校验。配置 HTTPS origin 时启用 Secure Cookie。 |
+| `DEEPSEEK_API_KEY` / `DEEPSEEK_MODEL` | 启用自由生成的服务端 Key 和模型名。 |
+| `QA_SOCKET_PATH` / `QA_CHROMIUM_PATH` | 浏览器验收服务的 socket 和 Chromium 可执行文件路径，由 Compose 预设。 |
 
-新版应用通过验收后，可在发布面板发布到固定链接。更新发布将固定链接指向当前版本，下线关闭访客入口。已有旧版公开链接在作者纳入发布管理前继续可用。登录后的使用记录保存在当前账号，访客预览及匿名使用的记录各自保存在浏览器里。
+## 功能与实现
 
-## 导出2048小游戏
+| 功能 | 工作方式 |
+| --- | --- |
+| 试用与模板 | 游客可打开试用成品，也可在「模板」中选用提示词。首次发起生成时，工作台保留需求并提示登录或注册。 |
+| 生成工作台 | 展示需求规划、代码生成、测试、验收和完成五个阶段，可取消生成、切换桌面和手机预览、查看自动测试及 HTML 源码。 |
+| 自动验收 | DeepSeek 先写用例，独立 Chromium 服务再执行点击、输入、刷新及结果断言。用户在「自动测试」查看通过、失败、未完成及浏览器日志。 |
+| 版本与发布 | 每次保存产生独立版本。通过验收后在发布面板手动发布、更新或下线。更新发布沿用原分享链接。 |
+| 账号项目与记录 | 「我的项目」按作品汇总版本和发布状态，展示最新版本的验收通过率。支持保存记录的应用可在同一账号的不同设备恢复记录。 |
 
-从首页打开「2048小游戏」，或下载 `/apps/merge-grid/download` 返回的完整 HTML 文件。双击文件即可游玩。需要独立分享时，将文件命名为 `index.html` 并上传到静态网页托管，使用托管服务返回的公开地址。在工作台发布生成作品时，可直接复制发布面板中的公网链接。
+## 验收与发布规则
 
-## 实现与取舍
+- DeepSeek 产物须通过浏览器运行检查与全部声明式用例。出现明确失败时，尝试修复一次并运行同一批用例。最终未通过的版本保留为私有草稿。
+- 发布链接使用 `/s/:slug`。选中新版本并更新发布后，访客访问同一链接即可打开新版。下线后，分享页返回 HTTP 410。
+- 可在「版本历史」打开旧版。旧版通过验收时，可以重新发布该版本。作者纳入发布管理后，旧的 `/apps/:id` 分享入口也受发布状态控制。
 
-- Node.js 提供注册、登录、生成和分享路由。PostgreSQL 16 保存账号、会话、版本、验收结果、发布状态和账号工具记录。
-- DeepSeek 生成自包含的 HTML、CSS 和 JavaScript。工作台支持桌面与手机预览、验收记录和查看源代码。生成页面支持离线运行，适合浏览器内可以完成的任务。
-- 浏览器服务以声明式用例操作控件和断言结果。超时记录为「未完成」。生成代码在单独的 Chromium 容器及受限的浏览器 iframe 里执行。
-- iframe 使用受限的本地存储接口。工作台和登录后的发布页通过账号同步工具记录，访客视图使用独立的浏览器存储。
-- 演示样例使用内置运行时代码和原有回归检查。登录使用 scrypt 密码哈希和一次性图像选择验证码。
+## 部署（Docker Compose）
 
-## 部署与 GitHub
+部署拓扑由 Node.js 应用、PostgreSQL 16 和可选的 Chromium 验收容器组成。数据库数据存放在 `postgres_data` 命名卷，验收服务只通过共享卷里的 Unix socket 接收任务。生产环境的模型 Key 和数据库密码由宿主机或部署平台注入。
 
-GitHub 提供代码仓库。Compose 在容器内网连接 PostgreSQL，数据库数据保存在 `postgres_data` 命名卷。应用端口默认绑定回环地址。评审实例使用公网 IP 和端口，在 Compose 启动时设置 `APP_BIND_ADDRESS=0.0.0.0` 和 `APP_PORT=3000`。
+公网评审实例使用 HTTP 和 `3000` 端口。直接暴露时设置 `APP_BIND_ADDRESS=0.0.0.0`，并按需设置 `APP_PORT`。通过 HTTPS 反向代理部署时，配置 `PUBLIC_ORIGIN` 为外部访问地址，并向应用传递原请求的 Host。
 
-| 运行环境变量 | 用途 |
-|---|---|
-| `PORT` | HTTP 端口，默认 `3000`。 |
-| `HOST` | 监听地址，容器默认 `0.0.0.0`。 |
-| `DATABASE_URL` | 手动启动 Node 时使用 PostgreSQL 连接 URL。也可使用标准 `PGHOST`、`PGUSER`、`PGDATABASE`、`PGPASSWORD` 配置。 |
-| `POSTGRES_PASSWORD` | Compose 读取的数据库密码，从终端环境或部署平台密钥配置传入。 |
-| `PUBLIC_ORIGIN` | 客户端访问的完整 origin，用于校验请求源。HTTPS 下设置 Secure Cookie。 |
-| `DEEPSEEK_API_KEY` | DeepSeek 服务端 Key。 |
-| `DEEPSEEK_MODEL` | 模型名，默认 `deepseek-flash`。 |
-| `QA_SOCKET_PATH` | 浏览器验收服务 Unix socket 路径，Compose 自动设置。 |
+## 目录
 
-通过 HTTPS 反向代理部署时，向应用传递客户端请求的 Host。提交前用国内手机流量和无痕窗口分别检查首页、账号流程及三个分享链接，确认服务重启后生成记录仍能恢复。
+```text
+public/           首页、模板、项目目录、工作台和分享页脚本
+src/              HTTP 服务、账号、存储、生成和浏览器验收
+deploy/           Chromium 容器配置及 seccomp 许可
+test/             项目集成测试和真实浏览器回归
+docs/             项目说明和评审路径
+ROADMAP.md        部署版本、进度及验证记录
+```
 
-`deploy/chromium-seccomp.json` 来自 [Playwright v1.65.1](https://github.com/microsoft/playwright/blob/v1.65.1/utils/docker/seccomp_profile.json)，采用其仓库的 Apache-2.0 许可。该配置允许 Chromium 在用户命名空间中为 zygote 执行 chroot，浏览器容器仍保留全部外层能力丢弃。
+## 已知边界
+
+- 自由生成面向能在浏览器离线运行的单页应用。依赖外部 API、实时协作或业务后端的需求超出当前范围。
+- 自动验收覆盖用例声明的行为，默认在桌面视口运行。移动端布局及触屏体验需要单独复测。
+- 无 DeepSeek Key 时可使用内置生成模式。已配置 DeepSeek 时，模型或浏览器验收故障会显示错误或保留未通过草稿。

@@ -5,7 +5,10 @@ ENV NODE_ENV=production PLAYWRIGHT_BROWSERS_PATH=/opt/playwright HOME=/tmp
 ARG DEBIAN_MIRROR=https://deb.debian.org
 COPY package.json package-lock.json ./
 USER root
-RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+# The Node slim image may omit a system trust bundle. Use Node's bundled roots for APT over HTTPS.
+RUN install -d /etc/ssl/certs \
+    && node -e "process.stdout.write(require('node:tls').rootCertificates.join('\n') + '\n')" > /etc/ssl/certs/ca-certificates.crt \
+    && sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && npm ci --include=dev \
     && npx playwright-core install --with-deps --only-shell chromium \
     && install -d -o node -g node /run/atoms-qa \

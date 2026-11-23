@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f4eb">
+  <title>Atoms Demo · 应用工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/studio.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a href="/" class="brand" id="home-link"><span class="brand-mark" aria-hidden="true"></span><span>Atoms Demo</span></a>
+    <nav aria-label="主导航">
+      <a href="/studio" id="studio-link">工作台</a>
+      <button class="text-action" type="button" id="login-open">登录</button>
+      <button class="solid compact" type="button" id="register-open">注册</button>
+      <span class="account-name" id="account-name" hidden></span>
+      <button class="text-action" id="logout" type="button" hidden>退出</button>
+    </nav>
+  </header>
+
+  <main id="home">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-content">
+        <h1 id="hero-title">把你的想法<br><span>变成能用的应用</span></h1>
+        <p>描述你想做的应用。生成后可以试用、查看测试结果，或把链接分享给别人。</p>
+        <form class="prompt-form hero-prompt" id="home-form">
+          <label class="sr-only" for="home-prompt">描述你想做的应用</label>
+          <textarea id="home-prompt" placeholder="例如：做一个秒表，支持开始、暂停、继续和归零。" rows="3" maxlength="800" required></textarea>
+          <div class="composer-actions"><span>Enter 生成 · Shift + Enter 换行</span>
+            <button class="solid" type="submit">生成应用 <span aria-hidden="true">↗</span></button></div>
+        </form>
+        <div class="suggestions" id="suggestions" aria-label="可填入的示例"></div>
+      </div>
+    </section>
+    <section class="featured" aria-labelledby="featured-title">
+      <div class="section-heading"><h2 id="featured-title">试用成品</h2><p>打开链接即可操作。</p></div>
+      <div class="example-grid" id="example-grid"></div>
+    </section>
+  </main>
+
+  <main id="workspace" class="workspace" hidden>
+    <section class="conversation" aria-label="生成工作区">
+      <div class="workspace-head"><h1>应用工作台</h1><a href="/" id="new-link">回到首页</a></div>
+      <div class="activity">
+        <p id="empty-activity" class="muted">输入一句话，开始生成你的应用。</p>
+        <p id="request-bubble" class="request-bubble" hidden></p>
+        <ol id="progress" class="progress" aria-live="polite"></ol>
+        <section id="history-section" class="history" hidden>
+          <h2>生成记录</h2><ul id="history-list"></ul>
+        </section>
+      </div>
+      <form class="prompt-form workspace-prompt" id="work-form">
+        <label class="sr-only" for="work-prompt">描述你想做的应用</label>
+        <textarea id="work-prompt" placeholder="描述要生成的应用…" rows="3" maxlength="800" required></textarea>
+        <div class="composer-actions"><span>输入需求</span><button class="solid" type="submit">生成 <span aria-hidden="true">↗</span></button></div>
+      </form>
+    </section>
+    <section class="result-panel" aria-label="产物预览">
+      <div class="result-bar">
+        <div class="result-tabs" role="tablist" aria-label="产物视图">
+          <button type="button" role="tab" aria-controls="preview-view" aria-selected="true" id="preview-tab">应用预览</button>
+          <button type="button" role="tab" aria-controls="tests-view" aria-selected="false" id="tests-tab">自动测试 <span id="test-count"></span></button>
+        </div>
+        <div class="publish-actions" id="publish-actions" hidden>
+          <button type="button" class="text-action" id="copy-link">复制链接</button>
+          <a class="solid compact" id="open-app" target="_blank" rel="noopener">打开应用 <span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
+      <div class="result-meta" id="result-meta" hidden>
+        <span id="result-title"></span><span id="source-tag"></span><a id="download-app">下载 HTML</a>
+      </div>
+      <div id="preview-view" class="preview-view" role="tabpanel" aria-labelledby="preview-tab">
+        <div class="empty-preview" id="empty-preview"><span class="empty-symbol" aria-hidden="true">◫</span><p>生成的应用会显示在这里</p></div>
+        <iframe id="preview" title="生成应用的预览" sandbox="allow-scripts" hidden></iframe>
+      </div>
+      <div id="tests-view" class="tests-view" role="tabpanel" aria-labelledby="tests-tab" hidden>
+        <p id="tests-summary" role="status">生成后会自动执行交互测试。</p><ul id="test-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="auth-dialog" aria-labelledby="auth-title">
+    <div class="dialog-head"><h2 id="auth-title"></h2><button type="button" class="text-action" id="auth-close" aria-label="关闭">×</button></div>
+    <form id="auth-form">
+      <label for="username">用户名</label><input id="username" name="username" autocomplete="username" minlength="2" maxlength="30" required>
+      <label for="password">密码</label><input id="password" name="password" type="password" minlength="8" maxlength="72" required>
+      <section id="challenge" hidden aria-labelledby="challenge-label">
+        <div class="challenge-title"><strong id="challenge-label"></strong><button class="text-action" id="challenge-refresh" type="button">换一张</button></div>
+        <div class="challenge-visual" id="challenge-visual" hidden>
+          <img id="challenge-image" alt="由六个图案组成的图像验证码">
+          <div class="challenge-cells" id="challenge-cells"></div>
+        </div>
+      </section>
+      <p id="auth-error" class="auth-error" role="alert"></p>
+      <button class="solid" id="auth-submit" type="submit"></button>
+    </form>
+    <button class="text-action auth-switch" type="button" id="auth-switch"></button>
+  </dialog>
+  <p class="toast" id="toast" role="status" hidden></p>
+</body>
+</html>

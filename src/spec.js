@@ -22,9 +22,10 @@ export const examples = [
   },
   {
     id: 'merge-grid',
+    revision: 2,
     prompt: '用原生 HTML、CSS、JavaScript 做一个独立单文件的 4×4 数字合成游戏。支持方向键、WASD 和触摸滑动。每次有效移动后以 90% 概率出 2、10% 概率出 4，同一方块每步最多合并一次。显示分数并保存最高分。合出 2048 后提示胜利并可继续，无法移动时显示结束和重新开始。使用原创配色和平滑动画，兼容手机和电脑。',
     spec: {
-      kind: 'game', title: '方阵合成', size: 4, target: 2048,
+      kind: 'game', title: '2048小游戏', size: 4, target: 2048,
       description: '滑动方阵，让相同数字相遇。试试合到 2048。'
     }
   },

@@ -77,12 +77,18 @@ export async function createStore(connectionString, schema = 'public') {
   }
   const findProject = id => first('SELECT * FROM projects WHERE id = $1', [id]);
   async function saveProject(project, owner, prompt, id = identifier()) {
-    const results = project.timeline || project.parentId || project.plan ? {
+    const results = project.timeline || project.parentId || project.plan || project.exampleRevision ? {
       items: project.checks, parentId: project.parentId, plan: project.plan, model: project.model, logs: project.logs,
-      rootId: project.rootId, managed: Boolean(project.timeline), timeline: project.timeline
+      rootId: project.rootId, managed: Boolean(project.timeline), timeline: project.timeline,
+      exampleRevision: project.exampleRevision
     } : project.checks;
     const row = await first(`INSERT INTO projects VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      ON CONFLICT(id) DO NOTHING RETURNING *`, [
+      ON CONFLICT(id) DO UPDATE SET kind = EXCLUDED.kind, title = EXCLUDED.title, description = EXCLUDED.description,
+        prompt = EXCLUDED.prompt, html = EXCLUDED.html, checks = EXCLUDED.checks
+      WHERE projects.owner = EXCLUDED.owner AND projects.source = 'example' AND EXCLUDED.source = 'example'
+        AND COALESCE((projects.checks::jsonb ->> 'exampleRevision')::integer, 1)
+          < COALESCE((EXCLUDED.checks::jsonb ->> 'exampleRevision')::integer, 1)
+      RETURNING *`, [
       id, owner, project.kind, project.title, project.description, prompt,
       project.html, JSON.stringify(results), project.source, Date.now()
     ]);

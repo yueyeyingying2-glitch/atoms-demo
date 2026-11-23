@@ -142,10 +142,13 @@ export async function createStudioServer(options = {}) {
   const authenticating = new Set();
 
   for (const example of examples) {
-    if (await store.project(example.id)) continue;
+    const existing = await store.project(example.id);
+    const revision = example.revision ?? 1;
+    if (existing && (existing.owner !== seedOwner || existing.source !== 'example'
+      || (JSON.parse(existing.checks).exampleRevision ?? 1) >= revision)) continue;
     const project = assemble(example.spec, example.prompt, 'example');
     if (!project.checks.every(test => test.passed)) throw new Error('示例未通过验收：' + example.id);
-    await store.saveProject(project, seedOwner, example.prompt, example.id);
+    await store.saveProject({ ...project, exampleRevision: revision }, seedOwner, example.prompt, example.id);
   }
 
   function limit(key, cap, period) {

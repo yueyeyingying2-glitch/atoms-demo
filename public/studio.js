@@ -88,7 +88,7 @@ function paintExamples(examples) {
     art.setAttribute('aria-hidden', 'true');
     if (item.kind === 'game') {
       const tiles = node('div', undefined, 'tiles');
-      for (const value of [2, 2, 4, 8]) tiles.append(node('span', value));
+      for (const value of [2, 0, 2, 8]) tiles.append(node('span', value));
       art.append(tiles);
     } else {
       art.append(node('span', item.kind === 'calculator' ? '¥ 600' : '00:08.24'));

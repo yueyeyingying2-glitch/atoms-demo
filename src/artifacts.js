@@ -198,6 +198,7 @@ function tileRuntime(spec) {
   const storageKey = 'studio:tiles:' + size + ':' + target;
   let board, score, won, undoUsed, previous, gesture;
   let best = 0;
+  let selectedIndex = -1;
 
   function spawn() {
     const spaces = board.flatMap((value, index) => value === 0 ? [index] : []);
@@ -232,6 +233,7 @@ function tileRuntime(spec) {
     won = false;
     previous = null;
     undoUsed = false;
+    selectedIndex = -1;
     spawn();
     spawn();
     render();
@@ -244,11 +246,17 @@ function tileRuntime(spec) {
   }
 
   function render(motions = [], spawned = -1) {
-    const cells = board.map(value => {
+    const cells = board.map((value, index) => {
       const cell = document.createElement('div');
       cell.className = 'tile';
       cell.dataset.tile = value;
-      if (value) cell.textContent = value;
+      cell.dataset.index = index;
+      if (value) {
+        cell.textContent = value;
+        cell.tabIndex = 0;
+        cell.setAttribute('role', 'button');
+        cell.setAttribute('aria-pressed', String(index === selectedIndex));
+      }
       return cell;
     });
     boardElement.replaceChildren(...cells);
@@ -322,7 +330,8 @@ function tileRuntime(spec) {
       if (!canMove()) showOutcome(false);
       return;
     }
-    previous = { board, score };
+    previous = { board, score, selectedIndex };
+    selectedIndex = motions.find(({ from }) => from.includes(selectedIndex))?.to ?? -1;
     board = next;
     score += earned;
     best = Math.max(best, score);
@@ -344,9 +353,25 @@ function tileRuntime(spec) {
     event.preventDefault();
     move(direction);
   });
+  function selectTile(cell) {
+    if (!cell || outcome.open) return;
+    const index = cell.dataset.tile === '0' ? -1 : Number(cell.dataset.index);
+    if (selectedIndex === index) return;
+    boardElement.querySelector('[aria-pressed="true"]')?.setAttribute('aria-pressed', 'false');
+    selectedIndex = index;
+    if (index >= 0) cell.setAttribute('aria-pressed', 'true');
+  }
+  boardElement.addEventListener('click', event => {
+    if (event.pointerType !== 'touch') selectTile(event.target.closest('[data-index]'));
+  });
+  boardElement.addEventListener('keydown', event => {
+    if (!event.target.matches('.tile[role="button"]') || !['Enter', ' '].includes(event.key)) return;
+    event.preventDefault();
+    selectTile(event.target);
+  });
   boardElement.addEventListener('pointerdown', event => {
     if (event.pointerType !== 'touch' || !event.isPrimary) return;
-    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, cell: event.target.closest('[data-index]') };
     boardElement.setPointerCapture?.(event.pointerId);
   });
   boardElement.addEventListener('pointercancel', () => { gesture = null; });
@@ -354,8 +379,12 @@ function tileRuntime(spec) {
     if (!gesture || gesture.id !== event.pointerId) return;
     const dx = event.clientX - gesture.x;
     const dy = event.clientY - gesture.y;
+    const cell = gesture.cell;
     gesture = null;
-    if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) return;
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < 20) {
+      selectTile(cell);
+      return;
+    }
     move(Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down'));
   });
   document.querySelectorAll('[data-restart]').forEach(button => button.addEventListener('click', restart));
@@ -370,7 +399,7 @@ function tileRuntime(spec) {
   });
   undoButton.addEventListener('click', () => {
     if (!previous || undoUsed) return;
-    ({ board, score } = previous);
+    ({ board, score, selectedIndex } = previous);
     undoUsed = true;
     previous = null;
     render();

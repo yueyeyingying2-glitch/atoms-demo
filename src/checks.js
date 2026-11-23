@@ -93,6 +93,15 @@ function testGame(doc, win, spec, check, restartDoc) {
   const tiles = () => [...doc.querySelectorAll('[data-tile]')].map(tile => Number(tile.dataset.tile));
   const score = () => Number(doc.getElementById('score').textContent);
   const button = direction => doc.querySelector('[data-move="' + direction + '"]');
+  check('点击数字方块后只有该方块选中', () => {
+    const first = doc.querySelector('[data-index="0"]');
+    const second = doc.querySelector('[data-index="1"]');
+    first.click();
+    if (first.getAttribute('aria-pressed') !== 'true') return false;
+    second.click();
+    return first.getAttribute('aria-pressed') === 'false'
+      && second.getAttribute('aria-pressed') === 'true' && score() === 0;
+  });
   check('无效移动不新增方块', () => {
     const before = tiles().join(',');
     button('up').click();

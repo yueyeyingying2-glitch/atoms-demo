@@ -158,3 +158,55 @@ test('无效模型密钥时，验收链仍生成可操作秒表', async t => {
   assert.equal(result.at(-1).project.source, 'fallback');
   assert.equal((await visitor(result.at(-1).project.url)).status, 200);
 });
+
+test('秒表增量修改新增计次，通过检查才出新链接，失败与越权均保留旧版', async t => {
+  const base = await listen(t, studio());
+  const owner = client(base);
+  const stranger = client(base);
+  const original = (await events(await owner('/api/generate', { prompt: '做一个秒表' }))).at(-1).project;
+  const previousHtml = await (await owner(original.url)).text();
+  assert.doesNotMatch(previousHtml, /id="lap"/);
+  const request = { prompt: '给刚才这个秒表增加计次功能，保留现有操作。', projectId: original.id };
+  assert.equal((await events(await stranger('/api/generate', request))).at(-1).stage, 'error');
+  const modified = (await events(await owner('/api/generate', request))).at(-1);
+  assert.equal(modified.stage, 'done');
+  assert.equal(modified.project.parentId, original.id);
+  assert.notEqual(modified.project.url, original.url);
+  assert.ok(modified.project.checks.some(item => item.label === '计次记录当前累积时间' && item.passed));
+  assert.match(await (await stranger(modified.project.url)).text(), /id="lap"/);
+  assert.equal((await events(await owner('/api/generate', {
+    prompt: '修改当前应用为倒计时', projectId: modified.project.id
+  }))).at(-1).stage, 'error');
+  const recovered = await (await owner('/api/projects/' + modified.project.id)).json();
+  assert.equal(recovered.parentId, original.id);
+  assert.equal(await (await owner(original.url)).text(), previousHtml);
+  assert.equal((await (await owner('/api/bootstrap')).json()).history.length, 2);
+});
+
+test('取消模型生成会关闭上游请求，前一个产物不会被覆盖', { timeout: 6000 }, async t => {
+  let started;
+  let disconnected;
+  const requestStarted = new Promise(resolve => { started = resolve; });
+  const requestClosed = new Promise(resolve => { disconnected = resolve; });
+  const modelHost = await listen(t, createServer((_request, response) => {
+    started();
+    response.once('close', disconnected);
+  }));
+  const base = await listen(t, studio({
+    model: { baseUrl: modelHost, model: 'cancel-check', key: randomBytes(16).toString('hex') }
+  }));
+  const bootstrap = await fetch(base + '/api/bootstrap');
+  const cookie = bootstrap.headers.get('set-cookie').split(';')[0];
+  const cancellation = new AbortController();
+  const response = await fetch(base + '/api/generate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ prompt: '做一个窗帘预算计算器' }), signal: cancellation.signal
+  });
+  assert.equal(response.status, 200);
+  await requestStarted;
+  cancellation.abort();
+  await requestClosed;
+  const details = await (await fetch(base + '/api/bootstrap', { headers: { Cookie: cookie } })).json();
+  assert.deepEqual(details.history, []);
+  assert.equal((await fetch(base + '/apps/curtain-budget')).status, 200);
+});

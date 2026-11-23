@@ -54,7 +54,7 @@ function calculatorRuntime(spec) {
   calculate();
 }
 
-function stopwatchRuntime() {
+function stopwatchRuntime(spec) {
   let elapsed = 0;
   let started = null;
   let interval;
@@ -63,18 +63,25 @@ function stopwatchRuntime() {
   const pause = document.getElementById('pause');
   const reset = document.getElementById('reset');
   const status = document.getElementById('timer-status');
+  const lapButton = document.getElementById('lap');
+  const laps = document.getElementById('laps');
+  let lapCount = 0;
   const pad = value => String(value).padStart(2, '0');
 
-  function tick() {
-    const ms = Math.max(0, Math.floor(elapsed + (started === null ? 0 : performance.now() - started)));
-    readout.textContent = pad(Math.floor(ms / 60000)) + ':' + pad(Math.floor(ms / 1000) % 60)
+  function format(ms) {
+    return pad(Math.floor(ms / 60000)) + ':' + pad(Math.floor(ms / 1000) % 60)
       + '.' + pad(Math.floor(ms / 10) % 100);
+  }
+  const currentTime = () => Math.max(0, Math.floor(elapsed + (started === null ? 0 : performance.now() - started)));
+  function tick() {
+    readout.textContent = format(currentTime());
   }
   function update() {
     const running = started !== null;
     start.disabled = running;
     start.textContent = elapsed > 0 ? '继续' : '开始';
     pause.disabled = !running;
+    if (lapButton) lapButton.disabled = !running;
     status.textContent = running ? '计时中' : elapsed > 0 ? '已暂停' : '准备计时';
     tick();
   }
@@ -95,8 +102,22 @@ function stopwatchRuntime() {
     clearInterval(interval);
     elapsed = 0;
     started = null;
+    lapCount = 0;
+    laps?.replaceChildren();
     update();
   });
+  if (spec.laps) {
+    lapButton.addEventListener('click', () => {
+      if (started === null) return;
+      const row = document.createElement('li');
+      const number = document.createElement('span');
+      const time = document.createElement('time');
+      number.textContent = '第 ' + ++lapCount + ' 次';
+      time.textContent = format(currentTime());
+      row.append(number, time);
+      laps.prepend(row);
+    });
+  }
   update();
 }
 
@@ -215,11 +236,13 @@ const contents = {
       <div class="result"><span>${escapeHtml(spec.resultLabel)}</span><p><strong id="value">—</strong>
       <small>${escapeHtml(spec.unit)}</small></p></div>`;
   },
-  stopwatch() {
+  stopwatch(spec) {
+    const lapControls = spec.laps ? '<button id="lap" disabled>计次</button>' : '';
+    const lapList = spec.laps ? '<ol id="laps" class="laps" aria-label="计次记录"></ol>' : '';
     return `<section class="timer"><div class="timer-clock"><p id="timer-status">准备计时</p>
       <output id="readout" aria-label="累计时间">00:00.00</output></div>
       <div class="actions timer-actions"><button id="start" class="primary">开始</button>
-      <button id="pause" disabled>暂停</button><button id="reset">归零</button></div></section>`;
+      <button id="pause" disabled>暂停</button>${lapControls}<button id="reset">归零</button></div>${lapList}</section>`;
   },
   game(spec) {
     return `<div class="game"><div class="game-head"><p>目标 <strong>${spec.target}</strong></p>

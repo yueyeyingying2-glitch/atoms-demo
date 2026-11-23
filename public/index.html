@@ -54,7 +54,9 @@
       <form class="prompt-form workspace-prompt" id="work-form">
         <label class="sr-only" for="work-prompt">描述你想做的应用</label>
         <textarea id="work-prompt" placeholder="描述要生成的应用…" rows="3" maxlength="800" required></textarea>
-        <div class="composer-actions"><span>输入需求</span><button class="solid" type="submit">生成 <span aria-hidden="true">↗</span></button></div>
+        <div class="composer-actions"><span>输入需求</span>
+          <div class="compose-controls"><button class="text-action" type="button" id="cancel-generation" hidden>取消生成</button>
+            <button class="solid" type="submit">生成 <span aria-hidden="true">↗</span></button></div></div>
       </form>
     </section>
     <section class="result-panel" aria-label="产物预览">
@@ -69,11 +71,13 @@
         </div>
       </div>
       <div class="result-meta" id="result-meta" hidden>
-        <span id="result-title"></span><span id="source-tag"></span><a id="download-app">下载 HTML</a>
+        <span id="result-title"></span><span id="source-tag"></span>
+        <button class="text-action" type="button" id="previous-version" hidden>查看上一版</button>
+        <a id="download-app">下载 HTML</a>
       </div>
       <div id="preview-view" class="preview-view" role="tabpanel" aria-labelledby="preview-tab">
         <div class="empty-preview" id="empty-preview"><span class="empty-symbol" aria-hidden="true">◫</span><p>生成的应用会显示在这里</p></div>
-        <iframe id="preview" title="生成应用的预览" sandbox="allow-scripts" hidden></iframe>
+        <iframe id="preview" title="生成应用的预览" sandbox="allow-scripts allow-forms" hidden></iframe>
       </div>
       <div id="tests-view" class="tests-view" role="tabpanel" aria-labelledby="tests-tab" hidden>
         <p id="tests-summary" role="status">生成后会自动执行交互测试。</p><ul id="test-list"></ul>

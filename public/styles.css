@@ -83,6 +83,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .prompt-form textarea::placeholder { color: #687062; }
 .composer-actions { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 2px 2px 0 8px; }
 .composer-actions > span { color: var(--muted); font-size: 12px; }
+.compose-controls { display: flex; gap: 12px; align-items: center; }
 .suggestions { display: flex; justify-content: center; flex-wrap: wrap; gap: 9px; margin-top: 19px; }
 .suggestions button {
   border: 1px solid var(--line); background: #fdfcf5; padding: 8px 13px; border-radius: 8px; color: #49513f; font-size: 13px;

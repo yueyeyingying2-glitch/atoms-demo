@@ -42,6 +42,9 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 #readout { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: clamp(28px, 8vw, 56px); }
 .actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
 .timer-actions button { flex: 1; }
+.laps { padding: 0; list-style: none; }
+.laps li { display: flex; justify-content: space-between; padding: 10px 2px; border-top: 1px solid var(--line); }
+.laps time { font-family: ui-monospace, monospace; }
 .game-head { display: flex; gap: 8px; justify-content: space-between; align-items: center; margin-bottom: 13px; font-size: 13px; }
 .game-head strong { display: block; font-family: ui-monospace, monospace; font-size: 19px; }
 .board { display: grid; grid-template-columns: repeat(var(--tile-count), minmax(0, 1fr)); gap: 5px; border-radius: 12px; background: #e2dfd0; padding: 6px; }

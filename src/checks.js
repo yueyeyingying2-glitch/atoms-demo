@@ -51,7 +51,7 @@ function testCalculator(doc, win, spec, prompt, check) {
   });
 }
 
-function testStopwatch(doc, advance, check) {
+function testStopwatch(doc, advance, check, spec) {
   const read = () => doc.getElementById('readout').textContent;
   const click = id => doc.getElementById(id).click();
   check('开始后计时递增', () => {
@@ -69,10 +69,23 @@ function testStopwatch(doc, advance, check) {
     advance(500);
     return read() === '00:01.73';
   });
+  if (spec.laps) {
+    check('计次记录当前累积时间', () => {
+      click('lap');
+      advance(270);
+      click('lap');
+      return [...doc.querySelectorAll('#laps time')].map(row => row.textContent).join(',') === '00:02.00,00:01.73';
+    });
+    check('暂停时禁止额外计次', () => {
+      click('pause');
+      click('lap');
+      return doc.getElementById('lap').disabled && doc.querySelectorAll('#laps li').length === 2;
+    });
+  }
   check('归零后停止计时', () => {
     click('reset');
     advance(1000);
-    return read() === '00:00.00' && !doc.getElementById('start').disabled;
+    return read() === '00:00.00' && !doc.getElementById('start').disabled && !doc.querySelector('#laps li');
   });
 }
 
@@ -153,7 +166,7 @@ export function checkArtifact(html, spec, prompt) {
     const doc = win.document;
     check('可渲染独立工作页面', () => doc.title === spec.title && Boolean(doc.querySelector('main')));
     if (spec.kind === 'calculator') testCalculator(doc, win, spec, prompt, check);
-    if (spec.kind === 'stopwatch') testStopwatch(doc, advance, check);
+    if (spec.kind === 'stopwatch') testStopwatch(doc, advance, check, spec);
     if (spec.kind === 'game') testGame(doc, win, spec, check, open);
     check('运行过程无脚本错误', () => errors.length === 0);
     return tests;

@@ -68,7 +68,9 @@ export function fallbackSpec(prompt) {
     const target = Number(prompt.match(/(?:目标|合出|达到)\s*(256|512|1024|2048|4096)\b/)?.[1]);
     return { ...game, size: /6\s*[x×*]\s*6/.test(prompt) ? 6 : 5, target: target || game.target };
   }
-  if (/秒表|计时器|stopwatch/i.test(prompt)) return examples[2].spec;
+  if (/秒表|计时器|stopwatch/i.test(prompt)) {
+    return { ...examples[2].spec, laps: /计次|记圈|圈速|分段记录/.test(prompt) };
+  }
   if (/窗帘|褶皱/.test(prompt)) {
     if (!/安装费/.test(prompt)) return curtain;
     return {
@@ -86,7 +88,7 @@ const systemPrompt = `你为一个中文应用生成器生成 JSON 对象，程�
 formula 的元素只能是数字、字段 id 或 {op,args}，op 支持 add、sub、mul、div。sub、div 恰好两个参数。
 字段 id 是短英文标识符。字段数量 1 到 6。默认值要能算出有限结果。准确实现用户指定的字段和运算。
 2. game。格式 {"kind":"game","title":"数字合成挑战","description":"移动并合并相同数字。","size":5,"target":2048}。仅支持原创数字合成变体，尺寸 5 或 6，目标 256、512、1024、2048、4096。
-3. stopwatch。格式 {"kind":"stopwatch","title":"秒表","description":"用于精确计时。"}。功能固定为开始、暂停、继续、归零。
+3. stopwatch。格式 {"kind":"stopwatch","title":"秒表","description":"用于精确计时。","laps":false}。功能包括开始、暂停、继续、归零，用户要求计次、记圈或分段记录时将 laps 设为 true。
 超出三类时输出 {"kind":"unsupported"}。字段内容是普通文本。请勿输出 JavaScript、HTML 或 Markdown。`;
 
 function text(value, max = 120) {
@@ -112,7 +114,7 @@ export function validateSpec(input) {
   const { kind } = input ?? {};
   if (!title || !['calculator', 'game', 'stopwatch'].includes(kind)) throw new Error('应用类型或标题不正确');
   const common = { kind, title, description };
-  if (kind === 'stopwatch') return common;
+  if (kind === 'stopwatch') return { ...common, laps: input.laps === true };
   if (kind === 'game') {
     if (![5, 6].includes(input.size) || ![256, 512, 1024, 2048, 4096].includes(input.target)) {
       throw new Error('游戏棋盘或目标不正确');
@@ -141,11 +143,12 @@ export function validateSpec(input) {
   };
 }
 
-export async function askModel(prompt, config) {
+export async function askModel(prompt, config, signal) {
   const { baseUrl, model, key, timeoutMs = 12000 } = config;
   if (!baseUrl || !model || !key) return null;
   const url = baseUrl.replace(/\/+$/, '') + '/chat/completions';
   for (let attempt = 0; attempt < 2; attempt++) {
+    const timeout = AbortSignal.timeout(timeoutMs);
     const response = await fetch(url, {
       method: 'POST',
       headers: { Authorization: 'Bearer ' + key, 'Content-Type': 'application/json' },
@@ -153,11 +156,12 @@ export async function askModel(prompt, config) {
         model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: prompt }],
         response_format: { type: 'json_object' }, max_tokens: 1200
       }),
-      signal: AbortSignal.timeout(timeoutMs)
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout
     });
     if ([429, 502, 503, 504].includes(response.status) && attempt === 0) {
       await response.body?.cancel();
       await new Promise(resolve => setTimeout(resolve, 700));
+      signal?.throwIfAborted();
       continue;
     }
     if (!response.ok) {

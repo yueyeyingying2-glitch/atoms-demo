@@ -69,10 +69,11 @@ export async function createStore(connectionString, schema = 'public') {
   }
   const findProject = id => first('SELECT * FROM projects WHERE id = $1', [id]);
   async function saveProject(project, owner, prompt, id = identifier()) {
+    const results = project.parentId ? { items: project.checks, parentId: project.parentId } : project.checks;
     const row = await first(`INSERT INTO projects VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       ON CONFLICT(id) DO NOTHING RETURNING *`, [
       id, owner, project.kind, project.title, project.description, prompt,
-      project.html, JSON.stringify(project.checks), project.source, Date.now()
+      project.html, JSON.stringify(results), project.source, Date.now()
     ]);
     return row ?? await findProject(id);
   }

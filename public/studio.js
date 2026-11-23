@@ -5,9 +5,10 @@ const promptInput = $('home-prompt');
 const workInput = $('work-prompt');
 const auth = $('auth-dialog');
 const preview = $('preview');
-const captions = { example: '预置示例', model: '模型生成', fallback: '演示模式' };
+const captions = { example: '预置示例', model: '模型生成', fallback: '演示模式', revision: '修改版本' };
 let currentProject;
 let generating = false;
+let generationRequest;
 let authMode;
 let challenge;
 let picked = null;
@@ -143,6 +144,7 @@ function showProject(project) {
   $('publish-actions').hidden = false;
   $('result-title').textContent = project.title;
   $('source-tag').textContent = captions[project.source];
+  $('previous-version').hidden = !project.parentId;
   $('open-app').href = project.url;
   $('download-app').href = project.url + '/download';
   $('empty-preview').hidden = true;
@@ -205,7 +207,9 @@ async function generate(prompt) {
   if (generating) return;
   if (request.length < 2) return notify('请多写几个字，描述你要生成的应用');
   generating = true;
+  generationRequest = new AbortController();
   for (const button of document.querySelectorAll('.prompt-form button[type="submit"]')) button.disabled = true;
+  $('cancel-generation').hidden = false;
   navigate('/studio' + (currentProject ? '?project=' + currentProject.id : ''));
   showPrompt(request);
   $('progress').replaceChildren();
@@ -213,7 +217,9 @@ async function generate(prompt) {
   try {
     await ready;
     const response = await fetch('/api/generate', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: request })
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: request, projectId: currentProject?.id }),
+      signal: generationRequest.signal
     });
     if (!response.ok) throw new Error((await response.json()).error);
     let buffer = '';
@@ -241,9 +247,12 @@ async function generate(prompt) {
     }
     if (!completed) throw new Error('连接中断，请重试生成。');
   } catch (error) {
-    addStage('error', error.message);
+    if (generationRequest.signal.aborted) addStage('cancelled', '已取消生成，已保存的版本仍可使用');
+    else addStage('error', error.message);
   } finally {
     generating = false;
+    generationRequest = undefined;
+    $('cancel-generation').hidden = true;
     for (const button of document.querySelectorAll('.prompt-form button[type="submit"]')) button.disabled = false;
   }
 }
@@ -267,6 +276,10 @@ for (const [id, path] of [['home-link', '/'], ['new-link', '/'], ['studio-link',
 window.addEventListener('popstate', readRoute);
 $('preview-tab').addEventListener('click', () => selectTab(false));
 $('tests-tab').addEventListener('click', () => selectTab(true));
+$('cancel-generation').addEventListener('click', () => generationRequest?.abort());
+$('previous-version').addEventListener('click', () => {
+  if (currentProject?.parentId) loadProject(currentProject.parentId, true);
+});
 for (const id of ['preview-tab', 'tests-tab']) {
   $(id).addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;

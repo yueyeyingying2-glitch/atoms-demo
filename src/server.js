@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { resolve } from 'node:path';
 import { createStore } from './store.js';
 import { challengeImage, createChallenge, credentials, passwordDigest, passwordMatches } from './auth.js';
-import { assemble, generate } from './generate.js';
+import { assemble, generate, isRevision, revise } from './generate.js';
 import { examples } from './spec.js';
 
 const files = Object.fromEntries([
@@ -69,8 +69,10 @@ function projectResponse(row, details = false) {
     source: row.source, createdAt: Number(row.created_at), url: '/apps/' + row.id
   };
   if (details) {
+    const testResults = JSON.parse(row.checks);
     project.prompt = row.prompt;
-    project.checks = JSON.parse(row.checks);
+    project.checks = Array.isArray(testResults) ? testResults : testResults.items;
+    if (testResults.parentId) project.parentId = testResults.parentId;
   }
   return project;
 }
@@ -251,14 +253,30 @@ export async function createStudioServer(options = {}) {
       limit('generate:' + owner, 12, 60_000);
       limit('generate-ip:' + localRequest, 100, 60_000);
       pending.add(owner);
+      const cancellation = new AbortController();
+      res.on('close', () => cancellation.abort());
       res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'X-Accel-Buffering': 'no' });
       res.flushHeaders();
       function emit(stage, message, data = {}) {
         if (!res.destroyed) res.write(JSON.stringify({ stage, message, ...data }) + '\n');
       }
       try {
-        const project = await generate(prompt, model, emit);
-        if (!project) {
+        let project;
+        if (isRevision(prompt)) {
+          const id = typeof input.projectId === 'string' && /^[\w-]{4,36}$/.test(input.projectId) ? input.projectId : '';
+          const parent = id && await store.project(id);
+          if (!parent || (parent.owner !== owner && parent.owner !== seedOwner)) {
+            emit('error', '请先打开你生成的应用，再输入修改要求。');
+            return;
+          }
+          if (res.destroyed) return;
+          project = revise(prompt, parent, emit);
+        } else {
+          project = await generate(prompt, model, emit, cancellation.signal);
+        }
+        if (project?.error) {
+          emit('error', project.error);
+        } else if (!project) {
           emit('error', '当前支持计算器、数字合成游戏和秒表。请试试首页示例，或者换一个更具体的描述。');
         } else if (!project.checks.every(test => test.passed)) {
           emit('error', '有测试项未通过，请修改需求后重试。', { checks: project.checks });

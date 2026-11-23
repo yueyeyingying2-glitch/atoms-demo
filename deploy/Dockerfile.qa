@@ -1,7 +1,7 @@
 ARG NODE_IMAGE=node:24-bookworm-slim
 FROM ${NODE_IMAGE}
 WORKDIR /app
-ENV NODE_ENV=production PLAYWRIGHT_BROWSERS_PATH=/opt/playwright HOME=/tmp
+ENV NODE_ENV=production QA_CHROMIUM_PATH=/usr/bin/chromium-headless-shell HOME=/tmp
 ARG DEBIAN_MIRROR=https://deb.debian.org
 COPY package.json package-lock.json ./
 USER root
@@ -10,7 +10,9 @@ RUN install -d /etc/ssl/certs \
     && node -e "process.stdout.write(require('node:tls').rootCertificates.join('\n') + '\n')" > /etc/ssl/certs/ca-certificates.crt \
     && sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && npm ci --include=dev \
-    && npx playwright-core install --with-deps --only-shell chromium \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends chromium-headless-shell fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/* \
     && install -d -o node -g node /run/atoms-qa \
     && touch /run/atoms-qa/.keep
 COPY src/acceptance.js src/preview.js src/qa-worker.js ./src/

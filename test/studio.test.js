@@ -227,7 +227,7 @@ test('DeepSeek 协议、自由生成、真实浏览器验收、草稿权限和�
   ];
   const habitCases = [
     check('记录今日阅读', [['click', 'reading'], ['text', 'total', '1']]),
-    check('重复点击可撤销', [['click', 'reading'], ['click', 'reading'], ['text', 'total', '0']])
+    check('重复点击可撤销', [['click', 'reading'], ['click', 'reading'], ['count', 'total', '1'], ['text', 'total', 0]])
   ];
   const received = [];
   const modelHost = await listen(t, createServer(async (request, response) => {

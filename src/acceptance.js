@@ -12,6 +12,8 @@ export function validateCases(cases) {
     let interacted = false;
     let remembered = false;
     const clean = steps.map(({ action, target, value }) => {
+      if (action === 'count' && typeof value === 'string' && /^\d{1,3}$/.test(value)) value = Number(value);
+      if (['fill', 'text', 'contains', 'value'].includes(action) && Number.isFinite(value)) value = String(value);
       if (!actions.has(action) || (action !== 'reload' && (typeof target !== 'string' || !/^[a-z][a-z0-9_-]{0,59}$/.test(target)))) {
         throw new Error('验收步骤格式不正确');
       }

@@ -82,4 +82,4 @@ GitHub 提供代码仓库。Compose 在容器内网连接 PostgreSQL，数据库
 
 通过 HTTPS 反向代理部署时，向应用传递客户端请求的 Host。提交前用国内手机流量和无痕窗口分别检查首页、账号流程及三个分享链接，确认服务重启后生成记录仍能恢复。
 
-`deploy/chromium-seccomp.json` 来自 [Playwright v1.65.1](https://github.com/microsoft/playwright/blob/v1.65.1/utils/docker/seccomp_profile.json)，采用其仓库的 Apache-2.0 许可。
+`deploy/chromium-seccomp.json` 来自 [Playwright v1.65.1](https://github.com/microsoft/playwright/blob/v1.65.1/utils/docker/seccomp_profile.json)，采用其仓库的 Apache-2.0 许可。该配置允许 Chromium 在用户命名空间中为 zygote 执行 chroot，浏览器容器仍保留全部外层能力丢弃。

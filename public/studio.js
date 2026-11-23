@@ -1,8 +1,11 @@
 import { closePreview, connectPreview, openPreview, waitForPreviewSave } from './preview.js';
+import { templates } from './templates.js';
 
 const $ = id => document.getElementById(id);
 const home = $('home');
 const workspace = $('workspace');
+const templatesPage = $('templates-page');
+const projectsPage = $('projects-page');
 const promptInput = $('home-prompt');
 const workInput = $('work-prompt');
 const auth = $('auth-dialog');
@@ -26,6 +29,7 @@ let challenge;
 let picked = null;
 let toastTimer;
 let challengeRequest = 0;
+let projectsRequest = 0;
 
 function node(tag, text, className) {
   const item = document.createElement(tag);
@@ -39,7 +43,7 @@ async function api(path, payload) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
   });
   const value = await response.json();
-  if (!response.ok) throw new Error(value.error ?? '请求失败');
+  if (!response.ok) throw Object.assign(new Error(value.error ?? '请求失败'), { status: response.status });
   return value;
 }
 
@@ -54,7 +58,11 @@ function notify(message) {
 function paintAccount(user) {
   currentUser = user;
   $('login-open').hidden = $('register-open').hidden = Boolean(user);
-  $('account-name').hidden = $('logout').hidden = !user;
+  $('account-name').hidden = $('logout').hidden = $('projects-link').hidden = !user;
+  if (!user) {
+    projectsRequest++;
+    $('projects-list').replaceChildren();
+  }
   $('account-name').textContent = user?.username ?? '';
 }
 
@@ -106,6 +114,117 @@ function paintHistory(history) {
   }
 }
 
+function paintTemplates() {
+  const number = new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 });
+  $('template-grid').replaceChildren(...templates.map(template => {
+    const card = node('article', undefined, 'template-card');
+    const cover = node('img', undefined, 'template-cover');
+    cover.src = template.cover;
+    cover.alt = '';
+    cover.width = 960;
+    cover.height = 540;
+    cover.decoding = 'async';
+    cover.loading = 'lazy';
+    const body = node('div', undefined, 'template-body');
+    const meta = node('div', undefined, 'template-meta');
+    const stars = node('span', '★ ' + number.format(template.stars), 'template-stars');
+    stars.setAttribute('aria-label', template.stars + ' 个 GitHub 星标');
+    meta.append(node('span', template.owner), stars);
+    const use = node('button', '使用模板', 'outline compact');
+    use.type = 'button';
+    use.addEventListener('click', () => {
+      navigate('/');
+      promptInput.value = template.prompt;
+      promptInput.focus();
+    });
+    const github = node('a', 'GitHub ↗', 'library-source');
+    github.href = 'https://github.com/' + template.owner + '/' + template.name;
+    github.target = '_blank';
+    github.rel = 'noopener noreferrer';
+    const actions = node('div', undefined, 'template-actions');
+    actions.append(use, github);
+    body.append(meta, node('h2', template.name), node('p', template.description), actions);
+    card.append(cover, body);
+    return card;
+  }));
+}
+
+function projectAge(timestamp) {
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  const relative = new Intl.RelativeTimeFormat('zh-CN');
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return relative.format(-minutes, 'minute');
+  if (minutes < 1440) return relative.format(-Math.floor(minutes / 60), 'hour');
+  if (minutes < 43_200) return relative.format(-Math.floor(minutes / 1440), 'day');
+  return new Date(timestamp).toLocaleDateString('zh-CN');
+}
+
+function projectCard(project) {
+  const item = node('li');
+  const card = node('a', undefined, 'project-card');
+  card.href = '/studio?project=' + encodeURIComponent(project.id);
+  card.addEventListener('click', event => {
+    if (hasModifier(event)) return;
+    event.preventDefault();
+    navigate(card.pathname + card.search);
+    readRoute();
+  });
+
+  const content = node('div', undefined, 'project-card-content');
+  const heading = node('div', undefined, 'project-card-heading');
+  const badges = { published: '已发布', offline: '已下线', unpublished: '未发布' };
+  const badge = node('span', badges[project.status], 'project-badge');
+  badge.dataset.status = project.status;
+  heading.append(node('h2', project.title), badge);
+
+  const date = new Date(project.updatedAt);
+  const time = node('time', projectAge(project.updatedAt));
+  time.dateTime = date.toISOString();
+  time.title = date.toLocaleString('zh-CN');
+  const meta = node('div', undefined, 'project-card-meta');
+  meta.append(node('span', project.versionCount + ' 个版本'), time);
+  content.append(heading, node('p', project.prompt || project.description), meta);
+  card.append(content);
+
+  if (project.testRate !== null) {
+    const rate = node('div', undefined, 'project-rate');
+    rate.append(node('strong', project.testRate + '%'), node('small', '验收通过率'));
+    card.append(rate);
+  }
+  item.append(card);
+  return item;
+}
+
+async function loadMyProjects() {
+  const request = ++projectsRequest;
+  const summary = $('projects-summary');
+  const list = $('projects-list');
+  const empty = $('projects-empty');
+  const retry = $('projects-retry');
+  summary.textContent = '正在加载项目…';
+  list.replaceChildren();
+  empty.hidden = retry.hidden = true;
+  const isCurrent = () => request === projectsRequest && currentUser && location.pathname === '/projects';
+  try {
+    const { projects } = await api('/api/projects');
+    if (!isCurrent()) return;
+    summary.textContent = projects.length + ' 个项目';
+    empty.hidden = projects.length > 0;
+    list.replaceChildren(...projects.map(projectCard));
+  } catch (error) {
+    if (!isCurrent()) return;
+    if (error.status === 401) {
+      paintAccount(null);
+      clearProject();
+      navigate('/', true);
+      openAuth('login');
+      return;
+    }
+    summary.textContent = '暂时无法加载项目。';
+    retry.hidden = false;
+  }
+}
+
 async function bootstrap() {
   const data = await api('/api/bootstrap');
   engine = data.engine;
@@ -116,11 +235,16 @@ async function bootstrap() {
 }
 
 function showPage() {
-  const studio = location.pathname === '/studio';
-  home.hidden = studio;
-  workspace.hidden = !studio;
-  if (studio) $('studio-link').setAttribute('aria-current', 'page');
-  else $('studio-link').removeAttribute('aria-current');
+  const path = location.pathname;
+  const pages = new Map([['/studio', workspace], ['/templates', templatesPage], ['/projects', projectsPage]]);
+  const page = path === '/projects' && currentUser === null ? home : pages.get(path) ?? home;
+  for (const panel of [home, ...pages.values()]) panel.hidden = panel !== page;
+  for (const [href, id] of [['/studio', 'studio-link'], ['/templates', 'templates-link'], ['/projects', 'projects-link']]) {
+    if (path === href && page !== home) $(id).setAttribute('aria-current', 'page');
+    else $(id).removeAttribute('aria-current');
+  }
+  const titles = { '/studio': '应用工作台', '/templates': '模板', '/projects': '我的项目' };
+  document.title = page === home ? 'Atoms Demo' : titles[path] + ' · Atoms Demo';
 }
 
 function navigate(path, replace = false) {
@@ -303,6 +427,11 @@ async function loadProject(id, updateLocation = false) {
 
 function readRoute() {
   showPage();
+  if (location.pathname === '/projects') {
+    if (currentUser) void loadMyProjects();
+    else navigate('/', true);
+    return;
+  }
   const id = new URLSearchParams(location.search).get('project');
   if (location.pathname !== '/studio' || generating) return;
   if (id && id !== currentProject?.id) loadProject(id);
@@ -400,13 +529,20 @@ for (const [form, input] of [[$('home-form'), promptInput], [$('work-form'), wor
     }
   });
 }
-for (const [id, path] of [['home-link', '/'], ['new-link', '/'], ['studio-link', '/studio']]) {
+function hasModifier(event) {
+  return event.metaKey || event.ctrlKey || event.shiftKey || event.altKey;
+}
+
+for (const [id, path] of [['home-link', '/'], ['new-link', '/'], ['create-project-link', '/'],
+  ['studio-link', '/studio'], ['templates-link', '/templates'], ['projects-link', '/projects']]) {
   $(id).addEventListener('click', event => {
-    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (hasModifier(event)) return;
     event.preventDefault();
     navigate(id === 'studio-link' && currentProject ? path + '?project=' + currentProject.id : path);
+    readRoute();
   });
 }
+$('projects-retry').addEventListener('click', loadMyProjects);
 window.addEventListener('popstate', readRoute);
 for (const [index, name] of tabs.entries()) {
   const tab = $(name + '-tab');
@@ -622,6 +758,7 @@ $('logout').addEventListener('click', async () => {
   }
 });
 
+paintTemplates();
 showPage();
 const ready = bootstrap().catch(() => { notify('暂时无法加载首页示例，请刷新重试。'); });
 ready.then(readRoute);

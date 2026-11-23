@@ -7,11 +7,13 @@ import { challengeImage, createChallenge, credentials, passwordDigest, passwordM
 import { assemble, generate, isRevision, revise } from './generate.js';
 import { examples } from './spec.js';
 import { generateWeb } from './agent.js';
+import { templates } from '../public/templates.js';
 import { downloadDocument, previewDocument, previewPolicy, viewerDocument, viewerPolicy } from './preview.js';
 
 const files = Object.fromEntries([
   ['/index.html', 'text/html; charset=utf-8'], ['/styles.css', 'text/css; charset=utf-8'],
-  ...['/studio.js', '/preview.js', '/viewer.js'].map(path => [path, 'text/javascript; charset=utf-8'])
+  ...['/studio.js', '/preview.js', '/viewer.js', '/templates.js'].map(path => [path, 'text/javascript; charset=utf-8']),
+  ...templates.map(item => [item.cover, 'image/jpeg'])
 ].map(([path, type]) => [path, { type, bytes: readFileSync(new URL('../public' + path, import.meta.url)) }]));
 
 const cookieName = 'studio_session';
@@ -225,7 +227,11 @@ export async function createStudioServer(options = {}) {
     }
     if (method === 'GET' && path === '/health') return json(res, 200, { status: 'ok' });
 
-    if (method === 'GET' && (path === '/' || path === '/studio' || files[path])) {
+    if (method === 'GET' && path === '/projects' && !(await getSession(req, store))?.user_id) {
+      res.writeHead(302, { Location: '/' });
+      return res.end();
+    }
+    if (method === 'GET' && (['/', '/studio', '/templates', '/projects'].includes(path) || files[path])) {
       const file = files[path] ?? files['/index.html'];
       res.writeHead(200, { 'Content-Type': file.type,
         'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" });
@@ -286,6 +292,11 @@ export async function createStudioServer(options = {}) {
         throw new HttpError(401, '请登录后保存到账号');
       }
       return serveState(req, res, publication.root_id, current);
+    }
+    if (method === 'GET' && path === '/api/projects') {
+      const current = await getSession(req, store);
+      if (!current?.user_id) throw new HttpError(401, '请登录后查看项目');
+      return json(res, 200, { projects: await store.projectGroups(workspaceOwner(current)) });
     }
     if (method === 'GET' && path === '/api/bootstrap') {
       const current = await sessionForRequest();

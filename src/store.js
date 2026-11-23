@@ -110,6 +110,41 @@ export async function createStore(connectionString, schema = 'public') {
       WHERE owner = $2 ORDER BY created_at, projects.id`, [rootId, owner]);
     return rows;
   }
+  async function projectGroups(owner) {
+    const { rows } = await pool.query(`WITH RECURSIVE owned AS MATERIALIZED (
+      SELECT id, title, prompt, description, source, created_at, checks::jsonb AS facts
+      FROM projects WHERE owner = $1
+    ), lineage(root_id, version_id) AS (
+      SELECT item.id, item.id FROM owned item
+      WHERE NOT EXISTS (SELECT 1 FROM owned parent WHERE parent.id = (item.facts ->> 'parentId'))
+      UNION ALL
+      SELECT lineage.root_id, child.id FROM lineage
+      JOIN owned child ON (child.facts ->> 'parentId') = lineage.version_id
+    ), ranked AS (
+      SELECT owned.*, lineage.root_id,
+        row_number() OVER (PARTITION BY lineage.root_id ORDER BY owned.created_at DESC, owned.id DESC) AS latest,
+        count(*) OVER (PARTITION BY lineage.root_id) AS version_count,
+        bool_or(source <> 'draft' AND (facts ->> 'managed') IS DISTINCT FROM 'true')
+          OVER (PARTITION BY lineage.root_id) AS legacy_public
+      FROM owned JOIN lineage ON owned.id = lineage.version_id
+    )
+    SELECT ranked.id, title, prompt, description, facts, version_count,
+      GREATEST(created_at, publications.updated_at) AS updated_at,
+      CASE WHEN publications.active THEN 'published'
+        WHEN publications.active = false THEN 'offline'
+        WHEN legacy_public THEN 'published' ELSE 'unpublished' END AS status
+    FROM ranked LEFT JOIN publications ON publications.root_id = ranked.root_id
+    WHERE latest = 1 ORDER BY updated_at DESC, ranked.id DESC`, [owner]);
+    return rows.map(row => {
+      const checks = Array.isArray(row.facts) ? row.facts : row.facts.items;
+      const passed = checks?.filter(check => check.passed === true).length ?? 0;
+      return {
+        id: row.id, title: row.title, prompt: row.prompt, description: row.description, status: row.status,
+        versionCount: Number(row.version_count), updatedAt: Number(row.updated_at),
+        testRate: checks?.length ? Math.round(passed * 100 / checks.length) : null
+      };
+    });
+  }
   function setPublication(rootId, versionId, active) {
     return first(`INSERT INTO publications (root_id, slug, version_id, active, updated_at)
       VALUES ($1, $2, $3, $4, $5) ON CONFLICT (root_id) DO UPDATE SET
@@ -142,7 +177,7 @@ export async function createStore(connectionString, schema = 'public') {
       await pool.query('INSERT INTO users VALUES ($1, $2, $3, $4, $5)', [id, handle, username, salt, passwordHash]);
       return id;
     },
-    project: findProject, projectRoot, versions, setPublication, writeToolState,
+    project: findProject, projectRoot, versions, projectGroups, setPublication, writeToolState,
     publication: id => first('SELECT * FROM publications WHERE root_id = $1', [id]),
     share: slug => first('SELECT * FROM publications WHERE slug = $1', [slug]),
     toolState: (rootId, userId) => first('SELECT data, revision FROM tool_state WHERE root_id = $1 AND user_id = $2', [rootId, userId]),

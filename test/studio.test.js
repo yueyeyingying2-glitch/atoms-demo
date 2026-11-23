@@ -115,6 +115,49 @@ test('游客不能生成，三项成品由账号发布后可供访客操作', as
   assert.equal((await (await visitor('/api/bootstrap')).json()).history.length, 3);
 });
 
+test('模板公开可浏览，项目列表按账号与作品分组显示状态', async t => {
+  const base = await listen(t, studio());
+  const owner = client(base);
+  const stranger = client(base);
+  assert.equal((await stranger('/projects', undefined, { redirect: 'manual' })).status, 302);
+  assert.equal((await stranger('/api/projects')).status, 401);
+  assert.equal((await stranger('/templates')).status, 200);
+  for (const cover of ['build-your-own-x', 'awesome', 'public-apis']) {
+    const response = await stranger('/template-covers/' + cover + '.jpg');
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'image/jpeg');
+    assert.ok((await response.arrayBuffer()).byteLength > 1000);
+  }
+
+  await register(owner);
+  await register(stranger);
+  const original = (await events(await owner('/api/generate', { prompt: '做一个秒表' }))).at(-1).project;
+  assert.deepEqual(await (await stranger('/api/projects')).json(), { projects: [] });
+  assert.equal((await owner('/projects')).status, 200);
+  const initial = (await (await owner('/api/projects')).json()).projects;
+  assert.equal(initial.length, 1);
+  assert.equal(initial[0].id, original.id);
+  assert.equal(initial[0].status, 'unpublished');
+  assert.equal(initial[0].versionCount, 1);
+  assert.equal(initial[0].testRate, 100);
+  assert.equal(initial[0].prompt, '做一个秒表');
+
+  await publish(owner, original.id);
+  const revised = (await events(await owner('/api/generate', {
+    prompt: '给刚才这个秒表增加计次功能', projectId: original.id
+  }))).at(-1).project;
+  const published = (await (await owner('/api/projects')).json()).projects;
+  assert.equal(published.length, 1);
+  assert.equal(published[0].status, 'published');
+  assert.equal(published[0].id, revised.id);
+  assert.equal(published[0].versionCount, 2);
+  await owner(publicationPath(original.id), { action: 'unpublish' });
+  const offline = (await (await owner('/api/projects')).json()).projects[0];
+  assert.equal(offline.status, 'offline');
+  assert.equal(offline.id, revised.id);
+  assert.equal((await stranger('/api/projects/' + revised.id)).status, 404);
+});
+
 test('点击图像验证码注册，退出后用用户名密码登录并恢复记录', async t => {
   const base = await listen(t, studio());
   const visitor = client(base);
@@ -521,6 +564,14 @@ test('真实浏览器操作登录弹窗、发布、跨设备历史和下线', {
   }
   try {
     await owner.goto(base);
+    assert.equal(await owner.locator('.hero p').innerText(), '用一句话告诉 AI 你想做什么，点击发布，分享应用。');
+    assert.equal(await owner.locator('#projects-link').isVisible(), false);
+    await owner.locator('#templates-link').click();
+    await owner.locator('.template-card').last().waitFor();
+    await owner.waitForFunction(() => [...document.querySelectorAll('.template-cover')].every(img => img.complete && img.naturalWidth > 0));
+    assert.equal(await owner.locator('.template-card').count(), 3);
+    await owner.locator('.template-card').first().getByRole('button', { name: '使用模板' }).click();
+    assert.match(await owner.locator('#home-prompt').inputValue(), /从零实现技术项目/);
     await owner.locator('#home-prompt').fill(examples[0].prompt);
     await owner.locator('#home-prompt').press('Enter');
     await owner.locator('#auth-dialog').waitFor();
@@ -581,6 +632,19 @@ test('真实浏览器操作登录弹窗、发布、跨设备历史和下线', {
     await owner.getByRole('heading', { name: '应用已下线' }).waitFor();
     assert.equal((await guest.reload()).status(), 410);
     await guest.getByRole('heading', { name: '应用已下线' }).waitFor();
+    await owner.locator('#publication-close').click();
+    await owner.locator('#projects-link').click();
+    const projectCard = owner.locator('.project-card');
+    await projectCard.waitFor();
+    assert.match(await projectCard.innerText(), /已下线/);
+    assert.match(await projectCard.innerText(), /1 个版本/);
+    await projectCard.click();
+    await owner.locator('#versions-open').waitFor();
+    assert.match(owner.url(), /\/studio\?project=/);
+    await owner.locator('#logout').click();
+    await owner.locator('#login-open').waitFor();
+    assert.equal(await owner.locator('#projects-link').isVisible(), false);
+    assert.equal((await owner.goto(base + '/projects')).url(), base + '/');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

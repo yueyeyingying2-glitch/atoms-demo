@@ -10,8 +10,14 @@
 </head>
 <body>
   <header class="topbar">
-    <a href="/" class="brand" id="home-link"><span class="brand-mark" aria-hidden="true"></span><span>Atoms Demo</span></a>
-    <nav aria-label="主导航">
+    <div class="topbar-main">
+      <a href="/" class="brand" id="home-link"><span class="brand-mark" aria-hidden="true"></span><span>Atoms Demo</span></a>
+      <nav class="library-nav" aria-label="内容导航">
+        <a href="/templates" id="templates-link">模板</a>
+        <a href="/projects" id="projects-link" hidden>我的项目</a>
+      </nav>
+    </div>
+    <nav aria-label="工作台和账号">
       <a href="/studio" id="studio-link">工作台</a>
       <button class="text-action" type="button" id="login-open">登录</button>
       <button class="solid compact" type="button" id="register-open">注册</button>
@@ -24,7 +30,7 @@
     <section class="hero" aria-labelledby="hero-title">
       <div class="hero-content">
         <h1 id="hero-title"><span>把你的想法</span> <span class="hero-title-accent">变成能用的应用</span></h1>
-        <p>用一句话告诉 AI 你想做什么。登录后，就能生成网页并直接试用。<br>测试通过后，点击发布，把链接分享给别人。</p>
+        <p>用一句话告诉 AI 你想做什么，点击发布，分享应用。</p>
         <form class="prompt-form hero-prompt" id="home-form">
           <label class="sr-only" for="home-prompt">描述你想做的应用</label>
           <textarea id="home-prompt" placeholder="例如：做一个秒表，支持开始、暂停、继续和归零。" rows="3" maxlength="800" required></textarea>
@@ -38,6 +44,28 @@
       <div class="section-heading"><h2 id="featured-title">试用成品</h2><p>打开链接即可操作。</p></div>
       <div class="example-grid" id="example-grid"></div>
     </section>
+  </main>
+
+  <main id="templates-page" class="library-page" hidden>
+    <header class="library-heading">
+      <h1>模板</h1>
+      <p>从 GitHub 星标前三的公开仓库获取灵感。</p>
+    </header>
+    <div class="template-grid" id="template-grid"></div>
+    <p class="library-caption">按 GitHub Stars 排序 · 2026 年 11 月 23 日</p>
+  </main>
+
+  <main id="projects-page" class="library-page project-library" hidden>
+    <header class="library-heading">
+      <h1>我的项目</h1>
+      <p id="projects-summary" role="status"></p>
+    </header>
+    <ul id="projects-list" class="projects-list"></ul>
+    <div id="projects-empty" class="projects-empty" hidden>
+      <p>你还没有生成过应用。</p>
+      <a class="outline compact" href="/" id="create-project-link">创建应用 ↗</a>
+    </div>
+    <button id="projects-retry" class="outline compact" type="button" hidden>重新加载</button>
   </main>
 
   <main id="workspace" class="workspace" hidden>

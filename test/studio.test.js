@@ -226,6 +226,7 @@ test('DeepSeek 协议、自由生成、真实浏览器验收、草稿权限和�
     ])
   ];
   const habitCases = [
+    check('首屏显示阅读选项', [['contains', 'reading', '']]),
     check('记录今日阅读', [['click', 'reading'], ['text', 'total', '1']]),
     check('重复点击可撤销', [['click', 'reading'], ['click', 'reading'], ['count', 'total', '1'], ['text', 'total', 0]])
   ];
@@ -339,7 +340,7 @@ saved.textContent=localStorage.getItem('saved')??'';</script></body></html>` };
       await artifact.getByTestId('reading').click();
       assert.equal(await artifact.getByTestId('total').textContent(), '1');
       await page.locator('#tests-tab').click();
-      assert.equal(await page.locator('#test-list .test-pass').count(), 3);
+      assert.equal(await page.locator('#test-list .test-pass').count(), 4);
       await page.locator('#code-tab').click();
       assert.match(await page.locator('#project-code').textContent(), /reading.onclick/);
       const visitorPage = await (await browser.newContext()).newPage();

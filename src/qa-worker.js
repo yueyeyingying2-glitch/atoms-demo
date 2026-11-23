@@ -22,6 +22,8 @@ const browser = await chromium.launch({
 });
 browser.on('disconnected', () => process.exit(1));
 
+class ResultMismatch extends Error {}
+
 async function runStep(page, step, memory, signal) {
   const frame = page.frameLocator('#shared-app');
   const target = step.target && frame.getByTestId(step.target);
@@ -37,19 +39,25 @@ async function runStep(page, step, memory, signal) {
     return;
   }
   const deadline = Date.now() + options.timeout;
+  let actual;
   do {
     signal.throwIfAborted();
-    if (step.action === 'count' && await target.count() === step.value) return;
-    if (step.action === 'value' && await target.inputValue(options) === step.value) return;
-    if (['changed', 'text', 'contains'].includes(step.action)) {
-      const text = (await target.innerText(options)).trim().replace(/\s+/g, ' ');
-      if (step.action === 'text' && text === step.value.trim().replace(/\s+/g, ' ')) return;
-      if (step.action === 'contains' && text.includes(step.value)) return;
-      if (step.action === 'changed' && text !== memory.value.replace(/\s+/g, ' ')) return;
+    if (step.action === 'count') {
+      actual = await target.filter({ visible: true }).count();
+      if (actual === step.value) return;
+    } else if (step.action === 'value') {
+      actual = await target.inputValue(options);
+      if (actual === step.value) return;
+    } else {
+      actual = (await target.innerText(options)).trim().replace(/\s+/g, ' ');
+      if (step.action === 'text' && actual === step.value.trim().replace(/\s+/g, ' ')) return;
+      if (step.action === 'contains' && actual.includes(step.value)) return;
+      if (step.action === 'changed' && actual !== memory.value.replace(/\s+/g, ' ')) return;
     }
     await pause(80, undefined, { signal });
   } while (Date.now() < deadline);
-  throw new Error('页面结果与预期不符');
+  const expected = step.action === 'changed' ? '读数改变' : JSON.stringify(step.value).slice(0, 70);
+  throw new ResultMismatch('预期 ' + expected + '，实际 ' + JSON.stringify(actual).slice(0, 70));
 }
 
 async function runCases(html, cases, signal) {
@@ -106,9 +114,14 @@ async function runCases(html, cases, signal) {
         await runStep(page, step, memory, signal);
       }
       checks.push({ label, passed: true });
-    } catch {
-      checks.push({ label, passed: signal.aborted ? null : false, detail: signal.aborted
-        ? '超过浏览器验收时限' : stepIndex ? '第 ' + stepIndex + ' 步未得到预期结果（' + steps[stepIndex - 1].action + '）' : '页面加载失败' });
+    } catch (error) {
+      let detail = '页面加载失败';
+      if (stepIndex) {
+        const step = steps[stepIndex - 1];
+        detail = '第 ' + stepIndex + ' 步（' + (step.target ?? step.action) + '）未得到预期结果';
+        if (error instanceof ResultMismatch) detail += '。' + error.message;
+      }
+      checks.push({ label, passed: signal.aborted ? null : false, detail: signal.aborted ? '超过浏览器验收时限' : detail });
     } finally {
       signal.removeEventListener('abort', stop);
       await context.close().catch(() => {});

@@ -6,10 +6,12 @@ import { createStore } from './store.js';
 import { challengeImage, createChallenge, credentials, passwordDigest, passwordMatches } from './auth.js';
 import { assemble, generate, isRevision, revise } from './generate.js';
 import { examples } from './spec.js';
+import { generateWeb } from './agent.js';
+import { downloadDocument, previewDocument, previewPolicy, viewerDocument, viewerPolicy } from './preview.js';
 
 const files = Object.fromEntries([
   ['/index.html', 'text/html; charset=utf-8'], ['/styles.css', 'text/css; charset=utf-8'],
-  ['/studio.js', 'text/javascript; charset=utf-8']
+  ...['/studio.js', '/preview.js', '/viewer.js'].map(path => [path, 'text/javascript; charset=utf-8'])
 ].map(([path, type]) => [path, { type, bytes: readFileSync(new URL('../public' + path, import.meta.url)) }]));
 
 const cookieName = 'studio_session';
@@ -66,13 +68,16 @@ function workspaceOwner(session) {
 function projectResponse(row, details = false) {
   const project = {
     id: row.id, kind: row.kind, title: row.title, description: row.description,
-    source: row.source, createdAt: Number(row.created_at), url: '/apps/' + row.id
+    source: row.source, createdAt: Number(row.created_at), url: row.source === 'draft' ? null : '/apps/' + row.id
   };
   if (details) {
     const testResults = JSON.parse(row.checks);
     project.prompt = row.prompt;
     project.checks = Array.isArray(testResults) ? testResults : testResults.items;
-    if (testResults.parentId) project.parentId = testResults.parentId;
+    project.html = row.html;
+    for (const key of ['parentId', 'plan', 'model', 'logs']) {
+      if (testResults[key] !== undefined) project[key] = testResults[key];
+    }
   }
   return project;
 }
@@ -88,6 +93,7 @@ const safetyHeaders = {
 export async function createStudioServer(options = {}) {
   const store = await createStore(options.databaseUrl, options.schema);
   const model = options.model ?? {};
+  const agent = options.agent?.key ? options.agent : undefined;
   const rates = new Map();
   const pending = new Set();
   const authenticating = new Set();
@@ -154,6 +160,24 @@ export async function createStudioServer(options = {}) {
       const isPreview = publicMatch[1] === 'preview';
       const row = await store.project(publicMatch[2]);
       if (!row) throw new HttpError(404, '这个应用链接不存在');
+      if (row.source === 'draft') {
+        const current = isPreview && await getSession(req, store);
+        if (!current || row.owner !== workspaceOwner(current)) throw new HttpError(404, '这个应用链接不存在');
+      }
+      if (row.kind === 'web') {
+        if (isPreview) {
+          res.writeHead(200, { 'Content-Type': htmlType, 'X-Frame-Options': 'SAMEORIGIN',
+            'Content-Security-Policy': previewPolicy, 'Referrer-Policy': 'no-referrer' });
+          return res.end(previewDocument(row.html));
+        }
+        if (publicMatch[3]) {
+          res.writeHead(200, { 'Content-Type': htmlType, 'Content-Security-Policy': "default-src 'none'; sandbox",
+            'Content-Disposition': 'attachment; filename="' + row.id + '.html"' });
+          return res.end(downloadDocument(row.html));
+        }
+        res.writeHead(200, { 'Content-Type': htmlType, 'Content-Security-Policy': viewerPolicy });
+        return res.end(viewerDocument(row.id));
+      }
       res.writeHead(200, {
         'Content-Type': htmlType,
         'X-Frame-Options': isPreview ? 'SAMEORIGIN' : 'DENY',
@@ -168,7 +192,7 @@ export async function createStudioServer(options = {}) {
         ...projectResponse(await store.project(example.id)), prompt: example.prompt
       })));
       return json(res, 200, {
-        user: viewer(current), featured, history: (await store.projects(workspaceOwner(current))).map(row => projectResponse(row))
+        user: viewer(current), engine: agent ? 'deepseek' : 'demo', featured, history: (await store.projects(workspaceOwner(current))).map(row => projectResponse(row))
       });
     }
     if (method === 'GET' && path === '/api/challenge') {
@@ -250,8 +274,9 @@ export async function createStudioServer(options = {}) {
       if (pending.has(owner) || authenticating.has(current.id)) {
         throw new HttpError(409, '正在处理上一条请求，请稍后再试');
       }
-      limit('generate:' + owner, 12, 60_000);
-      limit('generate-ip:' + localRequest, 100, 60_000);
+      if (agent && pending.size >= 3) throw new HttpError(429, '生成服务繁忙，请稍后重试');
+      limit('generate:' + owner, agent ? 16 : 12, agent ? 3600_000 : 60_000);
+      limit('generate-ip:' + localRequest, agent ? 60 : 100, agent ? 3600_000 : 60_000);
       pending.add(owner);
       const cancellation = new AbortController();
       res.on('close', () => cancellation.abort());
@@ -262,7 +287,7 @@ export async function createStudioServer(options = {}) {
       }
       try {
         let project;
-        if (isRevision(prompt)) {
+        if (agent ? input.projectId : isRevision(prompt)) {
           const id = typeof input.projectId === 'string' && /^[\w-]{4,36}$/.test(input.projectId) ? input.projectId : '';
           const parent = id && await store.project(id);
           if (!parent || (parent.owner !== owner && parent.owner !== seedOwner)) {
@@ -270,7 +295,9 @@ export async function createStudioServer(options = {}) {
             return;
           }
           if (res.destroyed) return;
-          project = revise(prompt, parent, emit);
+          project = agent ? await generateWeb(prompt, parent, agent, emit, cancellation.signal) : revise(prompt, parent, emit);
+        } else if (agent) {
+          project = await generateWeb(prompt, null, agent, emit, cancellation.signal);
         } else {
           project = await generate(prompt, model, emit, cancellation.signal);
         }
@@ -278,11 +305,13 @@ export async function createStudioServer(options = {}) {
           emit('error', project.error);
         } else if (!project) {
           emit('error', '当前支持计算器、数字合成游戏和秒表。请试试首页示例，或者换一个更具体的描述。');
-        } else if (!project.checks.every(test => test.passed)) {
+        } else if (project.kind !== 'web' && !project.checks.every(test => test.passed)) {
           emit('error', '有测试项未通过，请修改需求后重试。', { checks: project.checks });
         } else if (!res.destroyed) {
           const saved = await store.saveProject(project, owner, prompt);
-          emit('done', '测试通过，分享链接已生成', { project: projectResponse(saved, true) });
+          const draft = saved.source === 'draft';
+          const message = draft ? '验收未全部通过，已保存私有草稿' : '测试通过，分享链接已生成';
+          emit(draft ? 'draft' : 'done', message, { project: projectResponse(saved, true) });
         }
       } catch {
         emit('error', '生成失败，请稍后重试。');
@@ -312,6 +341,7 @@ if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.m
   const server = await createStudioServer({
     databaseUrl: process.env.DATABASE_URL,
     model: { baseUrl: process.env.LLM_BASE_URL, model: process.env.LLM_MODEL, key: process.env.LLM_API_KEY },
+    agent: { key: process.env.DEEPSEEK_API_KEY, model: process.env.DEEPSEEK_MODEL, socketPath: process.env.QA_SOCKET_PATH },
     publicOrigin: process.env.PUBLIC_ORIGIN ? new URL(process.env.PUBLIC_ORIGIN).origin : undefined
   });
   server.listen(port, host, () => console.log('Atoms Demo listening on port ' + server.address().port));

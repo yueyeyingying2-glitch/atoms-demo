@@ -1,3 +1,5 @@
+import { connectPreview, openPreview } from './preview.js';
+
 const $ = id => document.getElementById(id);
 const home = $('home');
 const workspace = $('workspace');
@@ -5,7 +7,10 @@ const promptInput = $('home-prompt');
 const workInput = $('work-prompt');
 const auth = $('auth-dialog');
 const preview = $('preview');
-const captions = { example: '预置示例', model: '模型生成', fallback: '演示模式', revision: '修改版本' };
+const captions = { example: '预置示例', model: '模型生成', fallback: '演示模式', revision: '修改版本', draft: '私有草稿' };
+const tabs = ['preview', 'tests', 'code'];
+connectPreview(preview);
+let engine = 'demo';
 let currentProject;
 let generating = false;
 let generationRequest;
@@ -95,6 +100,8 @@ function paintHistory(history) {
 
 async function bootstrap() {
   const data = await api('/api/bootstrap');
+  engine = data.engine;
+  updateComposer();
   paintAccount(data.user);
   paintExamples(data.featured);
   paintHistory(data.history);
@@ -117,23 +124,46 @@ function navigate(path, replace = false) {
   showPage();
 }
 
-function selectTab(tests) {
-  $('preview-tab').setAttribute('aria-selected', String(!tests));
-  $('tests-tab').setAttribute('aria-selected', String(tests));
-  $('preview-view').hidden = tests;
-  $('tests-view').hidden = !tests;
+function selectTab(selected) {
+  for (const name of tabs) {
+    $(name + '-tab').setAttribute('aria-selected', String(selected === name));
+    $(name + '-tab').tabIndex = selected === name ? 0 : -1;
+    $(name + '-view').hidden = selected !== name;
+  }
+  $('preview-controls').hidden = selected !== 'preview' || !currentProject;
 }
 
-function showChecks(checks = []) {
+function showPlan(plan) {
+  $('generation-plan').hidden = !plan;
+  if (!plan) return;
+  $('plan-title').textContent = plan.title;
+  $('plan-description').textContent = plan.description;
+  $('plan-requirements').replaceChildren(...plan.requirements.map(item => node('li', item)));
+  $('plan-tests').replaceChildren(...plan.cases.map(item => node('li', item)));
+}
+
+function updateComposer() {
+  const revision = Boolean(currentProject);
+  $('composer-mode').textContent = revision ? '修改当前版本' : engine === 'deepseek' ? 'DeepSeek' : '演示模式';
+  workInput.placeholder = revision ? '描述你要修改的地方…' : '描述要生成的应用…';
+  $('work-submit').textContent = revision ? '生成修改版 ↗' : '生成 ↗';
+}
+
+function showChecks(checks = [], logs = []) {
   const list = $('test-list');
   list.replaceChildren();
   const passes = checks.filter(item => item.passed).length;
   $('test-count').textContent = checks.length ? passes + '/' + checks.length : '';
   $('tests-summary').textContent = checks.length ? passes + ' / ' + checks.length + ' 项通过' : '生成后会自动执行交互测试。';
+  $('test-console').hidden = logs.length === 0;
+  $('test-log').textContent = logs.join('\n');
   for (const check of checks) {
     const row = node('li');
-    row.append(node('span', check.label),
-      node('strong', check.passed ? '通过' : '失败', check.passed ? 'test-pass' : 'test-fail'));
+    const text = node('div');
+    text.append(node('span', check.label));
+    if (check.detail) text.append(node('small', check.detail));
+    row.append(text, node('strong', check.passed === null ? '未完成' : check.passed ? '通过' : '失败',
+      check.passed === null ? 'muted' : check.passed ? 'test-pass' : 'test-fail'));
     list.append(row);
   }
 }
@@ -141,17 +171,22 @@ function showChecks(checks = []) {
 function showProject(project) {
   currentProject = project;
   $('result-meta').hidden = false;
-  $('publish-actions').hidden = false;
+  $('publish-actions').hidden = $('download-app').hidden = !project.url;
   $('result-title').textContent = project.title;
-  $('source-tag').textContent = captions[project.source];
+  $('source-tag').textContent = project.model ? 'DeepSeek · ' + project.model + (project.url ? '' : ' · 私有草稿') : captions[project.source];
   $('previous-version').hidden = !project.parentId;
-  $('open-app').href = project.url;
-  $('download-app').href = project.url + '/download';
+  if (project.url) {
+    $('open-app').href = project.url;
+    $('download-app').href = project.url + '/download';
+  }
   $('empty-preview').hidden = true;
-  preview.src = '/preview/' + project.id;
   preview.hidden = false;
-  showChecks(project.checks);
-  selectTab(false);
+  openPreview(preview, project.id, project.kind === 'web');
+  $('project-code').textContent = project.html ?? '';
+  showPlan(project.plan);
+  showChecks(project.checks, project.logs);
+  updateComposer();
+  selectTab(project.url ? 'preview' : 'tests');
 }
 
 function clearProject() {
@@ -164,8 +199,12 @@ function clearProject() {
   $('request-bubble').hidden = true;
   $('progress').replaceChildren();
   $('empty-activity').hidden = false;
+  $('run-status').hidden = true;
+  $('project-code').textContent = '';
+  showPlan();
   showChecks();
-  selectTab(false);
+  updateComposer();
+  selectTab('preview');
 }
 
 function showPrompt(prompt) {
@@ -177,6 +216,8 @@ function showPrompt(prompt) {
 function addStage(stage, message) {
   const item = node('li', message);
   item.dataset.stage = stage;
+  $('progress').lastElementChild?.removeAttribute('aria-current');
+  item.setAttribute('aria-current', 'step');
   $('progress').append(item);
 }
 
@@ -186,7 +227,8 @@ async function loadProject(id, updateLocation = false) {
     if (updateLocation) navigate('/studio?project=' + project.id);
     else if (new URLSearchParams(location.search).get('project') !== id) return;
     $('progress').replaceChildren();
-    addStage('done', '已恢复保存的版本');
+    $('run-status').hidden = true;
+    addStage(project.url ? 'done' : 'draft', '已恢复保存的版本');
     showPrompt(project.prompt);
     showProject(project);
   } catch (error) {
@@ -202,10 +244,12 @@ function readRoute() {
   if (!id) clearProject();
 }
 
-async function generate(prompt) {
+async function generate(prompt, followUp) {
   const request = prompt.trim();
   if (generating) return;
   if (request.length < 2) return notify('请多写几个字，描述你要生成的应用');
+  if (!followUp) clearProject();
+  const projectId = currentProject?.id;
   generating = true;
   generationRequest = new AbortController();
   for (const button of document.querySelectorAll('.prompt-form button[type="submit"]')) button.disabled = true;
@@ -213,12 +257,22 @@ async function generate(prompt) {
   navigate('/studio' + (currentProject ? '?project=' + currentProject.id : ''));
   showPrompt(request);
   $('progress').replaceChildren();
+  $('run-status').hidden = false;
+  if (!currentProject) showPlan();
+  const started = performance.now();
+  const updateElapsed = () => {
+    const seconds = Math.floor((performance.now() - started) / 1000);
+    $('elapsed').textContent = String(seconds) + ' 秒';
+    $('elapsed').dateTime = 'PT' + seconds + 'S';
+  };
+  updateElapsed();
+  const timer = setInterval(updateElapsed, 1000);
   addStage('request', '已提交生成请求');
   try {
     await ready;
     const response = await fetch('/api/generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt: request, projectId: currentProject?.id }),
+      body: JSON.stringify({ prompt: request, projectId }),
       signal: generationRequest.signal
     });
     if (!response.ok) throw new Error((await response.json()).error);
@@ -230,13 +284,14 @@ async function generate(prompt) {
       buffer = events.pop();
       for (const line of events) {
         if (!line) continue;
-        const { stage, message, checks, project } = JSON.parse(line);
+        const { stage, message, checks, project, plan } = JSON.parse(line);
         addStage(stage, message);
+        if (plan) showPlan(plan);
         if (stage === 'error') {
           completed = true;
-          if (checks) { showChecks(checks); selectTab(true); }
+          if (checks) { showChecks(checks); selectTab('tests'); }
         }
-        if (stage === 'done') {
+        if (stage === 'done' || stage === 'draft') {
           completed = true;
           if (location.pathname === '/studio') navigate('/studio?project=' + project.id, true);
           showProject(project);
@@ -250,6 +305,8 @@ async function generate(prompt) {
     if (generationRequest.signal.aborted) addStage('cancelled', '已取消生成，已保存的版本仍可使用');
     else addStage('error', error.message);
   } finally {
+    clearInterval(timer);
+    updateElapsed();
     generating = false;
     generationRequest = undefined;
     $('cancel-generation').hidden = true;
@@ -258,7 +315,7 @@ async function generate(prompt) {
 }
 
 for (const [form, input] of [[$('home-form'), promptInput], [$('work-form'), workInput]]) {
-  form.addEventListener('submit', event => { event.preventDefault(); generate(input.value); });
+  form.addEventListener('submit', event => { event.preventDefault(); generate(input.value, input === workInput && currentProject); });
   input.addEventListener('keydown', event => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
@@ -274,22 +331,33 @@ for (const [id, path] of [['home-link', '/'], ['new-link', '/'], ['studio-link',
   });
 }
 window.addEventListener('popstate', readRoute);
-$('preview-tab').addEventListener('click', () => selectTab(false));
-$('tests-tab').addEventListener('click', () => selectTab(true));
+for (const [index, name] of tabs.entries()) {
+  const tab = $(name + '-tab');
+  tab.addEventListener('click', () => selectTab(name));
+  tab.addEventListener('keydown', event => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    const next = tabs[(index + (event.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length];
+    selectTab(next);
+    $(next + '-tab').focus();
+  });
+}
+for (const mobile of [false, true]) {
+  $(mobile ? 'mobile-preview' : 'desktop-preview').addEventListener('click', () => {
+    $('preview-view').classList.toggle('mobile-preview', mobile);
+    $('mobile-preview').setAttribute('aria-pressed', String(mobile));
+    $('desktop-preview').setAttribute('aria-pressed', String(!mobile));
+  });
+}
+$('refresh-preview').addEventListener('click', () => {
+  if (currentProject) openPreview(preview, currentProject.id, currentProject.kind === 'web', true);
+});
 $('cancel-generation').addEventListener('click', () => generationRequest?.abort());
 $('previous-version').addEventListener('click', () => {
   if (currentProject?.parentId) loadProject(currentProject.parentId, true);
 });
-for (const id of ['preview-tab', 'tests-tab']) {
-  $(id).addEventListener('keydown', event => {
-    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
-    event.preventDefault();
-    selectTab(id === 'preview-tab');
-    $(id === 'preview-tab' ? 'tests-tab' : 'preview-tab').focus();
-  });
-}
 $('copy-link').addEventListener('click', async () => {
-  if (!currentProject) return;
+  if (!currentProject?.url) return;
   const url = new URL(currentProject.url, location.origin).href;
   try {
     await navigator.clipboard.writeText(url);

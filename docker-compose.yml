@@ -28,6 +28,11 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_MODEL: ${LLM_MODEL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      QA_SOCKET_PATH: /run/atoms-qa/browser.sock
+    volumes:
+      - browser_socket:/run/atoms-qa
     ports:
       - "${APP_BIND_ADDRESS:-127.0.0.1}:${APP_PORT:-3000}:3000"
     healthcheck:
@@ -36,5 +41,35 @@ services:
       timeout: 3s
       retries: 6
 
+  browser:
+    profiles: [agent]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.qa
+    restart: unless-stopped
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=deploy/chromium-seccomp.json
+    mem_limit: 448m
+    pids_limit: 160
+    shm_size: 96m
+    tmpfs:
+      - /tmp:size=96m,mode=1777
+    volumes:
+      - browser_socket:/run/atoms-qa
+    environment:
+      QA_SOCKET_PATH: /run/atoms-qa/browser.sock
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get({socketPath:process.env.QA_SOCKET_PATH,path:'/health'},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
 volumes:
+  browser_socket:
   postgres_data:

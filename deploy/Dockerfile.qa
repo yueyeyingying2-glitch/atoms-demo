@@ -1,0 +1,16 @@
+ARG NODE_IMAGE=node:24-bookworm-slim
+FROM ${NODE_IMAGE}
+WORKDIR /app
+ENV NODE_ENV=production PLAYWRIGHT_BROWSERS_PATH=/opt/playwright HOME=/tmp
+ARG DEBIAN_MIRROR=https://deb.debian.org
+COPY package.json package-lock.json ./
+USER root
+RUN sed -i "s|http://deb.debian.org|${DEBIAN_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && npm ci --include=dev \
+    && npx playwright-core install --with-deps --only-shell chromium \
+    && install -d -o node -g node /run/atoms-qa \
+    && touch /run/atoms-qa/.keep
+COPY src/acceptance.js src/preview.js src/qa-worker.js ./src/
+COPY public/preview.js public/viewer.js public/styles.css ./public/
+USER node
+CMD ["node", "src/qa-worker.js"]

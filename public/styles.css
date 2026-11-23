@@ -191,3 +191,24 @@ dialog::backdrop { background: #212b226e; }
   .card-game .tiles { grid-template-columns: repeat(2,24px); }.card-game .tiles span { height: 24px; }
   .example-card-body > span { display: none; }
 }
+.run-status { display: flex; justify-content: flex-end; color: var(--muted); font: 12px ui-monospace, monospace; }
+.generation-plan { padding: 14px; margin-top: 14px; border: 1px solid var(--line); border-radius: 12px; background: #f7f7ed; overflow-wrap: anywhere; }
+.generation-plan h2 { margin: 0; font-size: 15px; }
+.generation-plan p, .generation-plan li, .generation-plan summary { font-size: 13px; line-height: 1.6; }
+.generation-plan ul, .generation-plan ol { padding-left: 21px; }
+.generation-plan summary, #test-console summary { cursor: pointer; color: var(--muted); }
+.progress li[data-stage="draft"] { color: #855b25; font-weight: 650; }
+.progress li[data-stage="draft"]::before { background: #b58d51; }
+.preview-controls { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--line); padding: 7px 13px; }
+.preview-controls div { display: flex; gap: 4px; }
+.preview-controls button { padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 13px; }
+.preview-controls button[aria-pressed="true"] { background: #ebf0d9; color: #34452d; }
+.mobile-preview iframe { max-width: 390px; justify-self: center; box-shadow: 0 0 0 1px var(--line), 0 8px 35px #26311b22; }
+#test-list small { display: block; margin-top: 4px; color: var(--muted); }
+#test-list strong { flex: none; }
+#test-console { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+#test-log { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.code-view { background: #222d26; color: #edf2df; flex: 1; }
+.code-view pre { margin: 0; padding: 18px; overflow: auto; max-height: 72vh; min-height: 390px; font-size: 13px; line-height: 1.55; }
+.shared-app { margin: 0; overflow: hidden; }
+.shared-app iframe { display: block; min-height: 0; height: 100dvh; }

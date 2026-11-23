@@ -210,3 +210,150 @@ test('取消模型生成会关闭上游请求，前一个产物不会被覆盖',
   assert.deepEqual(details.history, []);
   assert.equal((await fetch(base + '/apps/curtain-budget')).status, 200);
 });
+
+const check = (label, steps) => ({ label, steps: steps.map(([action, target, value]) => ({ action, target, value })) });
+
+test('DeepSeek 协议、自由生成、真实浏览器验收、草稿权限和版本', {
+  skip: !process.env.TEST_QA_SOCKET && '需要设置 TEST_QA_SOCKET'
+}, async t => {
+  const mortgageCases = [
+    check('计算提前还款后的剩余本金', [
+      ['fill', 'balance', '9000'], ['fill', 'advance', '2000'], ['click', 'calculate'], ['text', 'result', '7000']
+    ]),
+    check('保存方案后刷新仍有记录', [
+      ['fill', 'balance', '9000'], ['fill', 'advance', '2000'], ['click', 'calculate'], ['click', 'save'],
+      ['reload'], ['text', 'saved', '7000']
+    ])
+  ];
+  const habitCases = [
+    check('记录今日阅读', [['click', 'reading'], ['text', 'total', '1']]),
+    check('重复点击可撤销', [['click', 'reading'], ['click', 'reading'], ['text', 'total', '0']])
+  ];
+  const received = [];
+  const modelHost = await listen(t, createServer(async (request, response) => {
+    try {
+      assert.equal(request.url, '/chat/completions');
+      assert.equal(request.headers.authorization, 'Bearer mock-deepseek-key');
+      let raw = '';
+      for await (const chunk of request) raw += chunk;
+      const payload = JSON.parse(raw);
+      assert.equal(payload.model, 'deepseek-flash');
+      assert.equal(payload.response_format.type, 'json_object');
+      assert.equal(payload.thinking.type, 'disabled');
+      const data = JSON.parse(payload.messages[1].content);
+      received.push(data);
+      const habits = data.prompt.includes('习惯');
+      const failing = data.prompt.includes('故障') || (data.prompt.includes('自修复') && !data.repair);
+      const revision = data.prompt.includes('蓝色');
+      const title = habits ? '习惯打卡' : '提前还款计算器';
+      const content = !data.plan ? {
+        title, description: '本地验收用应用', requirements: habits ? ['切换阅读打卡状态'] : ['计算剩余本金', '保存方案'],
+        cases: habits ? habitCases : mortgageCases
+      } : { html: habits ? `<!doctype html><html lang="zh"><head><title>习惯打卡</title></head>
+<body><h1>习惯打卡</h1><button data-testid="reading" id="reading">阅读</button><output data-testid="total" id="total">0</output>
+<script>let done=false;reading.onclick=()=>{done=!done;total.textContent=Number(done)}</script></body></html>`
+        : `<!doctype html><html lang="zh"><head><title>提前还款计算器</title>${revision ? '<style>body{color:navy}</style>' : ''}</head>
+<body><h1>提前还款计算器</h1><label>待还本金<input id="balance" data-testid="balance" type="number" value="0"></label>
+<label>提前还款<input id="advance" data-testid="advance" type="number" value="0"></label>
+<button id="calculate" data-testid="calculate">计算</button><output id="result" data-testid="result"></output>
+<button id="save" data-testid="save">保存</button><p id="saved" data-testid="saved"></p>
+<script>calculate.onclick=()=>{result.value=${failing ? '0' : 'Number(balance.value)-Number(advance.value)'}};
+save.onclick=()=>{localStorage.setItem('saved',result.value);saved.textContent=result.value};
+saved.textContent=localStorage.getItem('saved')??'';</script></body></html>` };
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(content) } }] }));
+    } catch (error) {
+      response.writeHead(500).end();
+      t.diagnostic(error.message);
+    }
+  }));
+  const base = await listen(t, studio({
+    agent: { baseUrl: modelHost, key: 'mock-deepseek-key', socketPath: process.env.TEST_QA_SOCKET }
+  }));
+  const visitor = client(base);
+  assert.equal((await (await visitor('/api/bootstrap')).json()).engine, 'deepseek');
+  const stranger = client(base);
+  const mortgage = await events(await visitor('/api/generate', { prompt: '做个提前还款计算器，并在刷新后保留方案' }));
+  assert.deepEqual(mortgage.map(item => item.stage), ['plan', 'build', 'check', 'done'], JSON.stringify(mortgage.at(-1).project?.checks));
+  const original = mortgage.at(-1).project;
+  assert.equal(original.source, 'model');
+  assert.equal(original.model, 'deepseek-flash');
+  assert.equal(original.plan.cases.length, 2);
+  assert.equal(original.checks.length, 3);
+  assert.ok(original.checks.every(item => item.passed));
+  const shared = await stranger(original.url);
+  assert.equal(shared.status, 200);
+  assert.match(await shared.text(), /sandbox="allow-scripts allow-forms"/);
+  const preview = await stranger('/preview/' + original.id);
+  assert.match(preview.headers.get('content-security-policy'), /sandbox allow-scripts allow-forms/);
+  assert.match(await preview.text(), /atoms-storage/);
+  assert.match((await stranger(original.url + '/download')).headers.get('content-disposition'), /attachment/);
+
+  const revised = (await events(await visitor('/api/generate', { prompt: '改成蓝色', projectId: original.id }))).at(-1).project;
+  assert.equal(revised.parentId, original.id);
+  assert.notEqual(revised.url, original.url);
+  assert.match(revised.html, /color:navy/);
+  assert.equal(received[2].previous.html, original.html);
+  assert.doesNotMatch(await (await stranger('/preview/' + original.id)).text(), /color:navy/);
+
+  const failed = (await events(await visitor('/api/generate', { prompt: '模拟计算发生故障', projectId: revised.id }))).at(-1);
+  assert.equal(failed.stage, 'draft');
+  assert.equal(failed.project.source, 'draft');
+  assert.equal(failed.project.url, null);
+  assert.equal(failed.project.parentId, revised.id);
+  assert.ok(failed.project.checks.some(item => item.passed === false && item.detail.includes('预期')));
+  assert.equal((await stranger('/apps/' + failed.project.id)).status, 404);
+  assert.equal((await stranger('/preview/' + failed.project.id)).status, 404);
+  assert.equal((await visitor('/preview/' + failed.project.id)).status, 200);
+  assert.equal((await stranger(revised.url)).status, 200);
+  const restored = await (await visitor('/api/projects/' + failed.project.id)).json();
+  assert.equal(restored.plan.description, '本地验收用应用');
+  assert.deepEqual(restored.checks, failed.project.checks);
+
+  const repair = await events(await visitor('/api/generate', { prompt: '用自修复流程做一个提前还款计算器' }));
+  assert.deepEqual(repair.map(item => item.stage), ['plan', 'build', 'check', 'repair', 'check', 'done']);
+  assert.ok(repair.at(-1).project.checks.every(item => item.passed));
+  assert.ok(received.some(item => item.repair?.checks.some(result => result.passed === false)));
+
+  const habits = (await events(await visitor('/api/generate', { prompt: '做一个习惯打卡网页，支持取消打卡' }))).at(-1);
+  assert.equal(habits.stage, 'done', JSON.stringify(habits.project?.checks));
+  assert.equal(habits.project.title, '习惯打卡');
+  assert.ok(habits.project.checks.every(item => item.passed));
+
+  if (process.env.TEST_CHROME) {
+    const { chromium } = await import('playwright-core');
+    const browser = await chromium.launch({ executablePath: process.env.TEST_CHROME, chromiumSandbox: true });
+    try {
+      const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+      const errors = [];
+      page.on('pageerror', error => errors.push(error.message));
+      await page.goto(base);
+      await page.locator('#home-prompt').fill('做一个习惯打卡网页，支持取消打卡');
+      await page.locator('#home-form button[type="submit"]').click();
+      await page.locator('#open-app').waitFor({ state: 'visible', timeout: 15_000 });
+      assert.equal(await page.locator('#plan-title').textContent(), '习惯打卡');
+      assert.match(await page.locator('#source-tag').textContent(), /DeepSeek/);
+      await page.locator('#mobile-preview').click();
+      assert.equal(Math.round((await page.locator('#preview').boundingBox()).width), 390);
+      const artifact = page.frameLocator('#preview');
+      await artifact.getByTestId('reading').click();
+      assert.equal(await artifact.getByTestId('total').textContent(), '1');
+      await page.locator('#tests-tab').click();
+      assert.equal(await page.locator('#test-list .test-pass').count(), 3);
+      await page.locator('#code-tab').click();
+      assert.match(await page.locator('#project-code').textContent(), /reading.onclick/);
+      const visitorPage = await (await browser.newContext()).newPage();
+      await visitorPage.goto(new URL(await page.locator('#open-app').getAttribute('href'), base).href);
+      const sharedFrame = visitorPage.frameLocator('#shared-app');
+      await sharedFrame.getByTestId('reading').click();
+      assert.equal(await sharedFrame.getByTestId('total').textContent(), '1');
+      await page.reload();
+      await page.locator('#open-app').waitFor({ state: 'visible' });
+      assert.equal(await page.locator('#plan-title').textContent(), '习惯打卡');
+      assert.deepEqual(errors, []);
+      if (process.env.TEST_STUDIO_SCREENSHOT) await page.screenshot({ path: process.env.TEST_STUDIO_SCREENSHOT });
+    } finally {
+      await browser.close();
+    }
+  }
+});

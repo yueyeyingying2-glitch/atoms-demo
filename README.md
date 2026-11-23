@@ -1,5 +1,7 @@
 # Atoms Demo
 
+[在线 Demo](http://113.45.177.72:3000/)
+
 一个可部署的自然语言应用生成器。输入一句话，智能体生成应用规格，服务端将规格编译成独立 HTML，执行交互检查。通过后可打开、分享或下载产物。首页直接提供三个成品，游客可生成和试用，注册登录后可恢复自己的记录。
 
 ## 本地启动
@@ -44,7 +46,7 @@ HOST=127.0.0.1 npm start
 
 ## 部署与 GitHub
 
-GitHub 提供代码仓库。公网运行需要 Docker 或 Node.js 主机和可访问的 HTTPS 地址。Compose 在容器内网连接 PostgreSQL，数据库数据保存在 `postgres_data` 命名卷。应用端口默认绑定回环地址，部署时通过 HTTPS 反向代理访问。
+GitHub 提供代码仓库。Compose 在容器内网连接 PostgreSQL，数据库数据保存在 `postgres_data` 命名卷。应用端口默认绑定回环地址。评审实例使用公网 IP 和端口，在 Compose 启动时设置 `APP_BIND_ADDRESS=0.0.0.0` 和 `APP_PORT=3000`。
 
 | 运行环境变量 | 用途 |
 |---|---|
@@ -52,12 +54,12 @@ GitHub 提供代码仓库。公网运行需要 Docker 或 Node.js 主机和可�
 | `HOST` | 监听地址，容器默认 `0.0.0.0`。 |
 | `DATABASE_URL` | 手动启动 Node 时使用 PostgreSQL 连接 URL。也可使用标准 `PGHOST`、`PGUSER`、`PGDATABASE`、`PGPASSWORD` 配置。 |
 | `POSTGRES_PASSWORD` | Compose 读取的数据库密码，从终端环境或部署平台密钥配置传入。 |
-| `PUBLIC_ORIGIN` | 客户端访问的完整 HTTPS origin，用于校验请求源和设置 Secure Cookie。 |
+| `PUBLIC_ORIGIN` | 客户端访问的完整 origin，用于校验请求源。HTTPS 下设置 Secure Cookie。 |
 | `LLM_BASE_URL` | 兼容 Chat Completions 的服务地址，填写到 `/chat/completions` 之前。 |
 | `LLM_MODEL` | 模型服务商提供的模型名。 |
 | `LLM_API_KEY` | 在服务器的密钥配置中设置。 |
 
-在已有 HTTPS 反向代理后绑定服务端口，向应用传递客户端请求的 Host。部署后用国内手机流量和无痕窗口分别检查首页、账号流程及三个分享链接。检查持久卷在服务重启后能恢复生成记录。
+通过 HTTPS 反向代理部署时，向应用传递客户端请求的 Host。提交前用国内手机流量和无痕窗口分别检查首页、账号流程及三个分享链接，确认服务重启后生成记录仍能恢复。
 
 ## AI 工具与后续工作
 
